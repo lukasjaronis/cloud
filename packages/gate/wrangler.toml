@@ -1,0 +1,11 @@
+name = "gate"
+main = "src/index.ts"
+compatibility_date = "2023-11-21"
+compatibility_flags = [ "nodejs_compat" ]
+
+[vars]
+AUTHENTICATION_TOKEN = "66Sd6bz3LSqOgU8BOqPPXFshJAD5nZnVZfhWV55DxHE="
+
+[[kv_namespaces]]
+binding = "gate"
+id = "dd7807555d404ba8a81c37d0060ffe0b"
