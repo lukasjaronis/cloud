@@ -2,19 +2,19 @@ import { Hono } from "hono";
 import { logger } from "hono/logger";
 import { cors } from "hono/cors";
 import { bearerAuth } from "hono/bearer-auth";
-import { ExecutionContext, KVNamespace } from "@cloudflare/workers-types";
-import { CreateKeyParams, VerifyKeyParams, createKey, verifyKey } from "./utils/keys";
-import { apiResponse } from "./types";
-import { getHeaders } from "./utils/headers";
+import {
+  DurableObjectNamespace,
+  KVNamespace,
+} from "@cloudflare/workers-types";
+import { Key, KeyCreateParams, KeyVerifiyHashParams } from "./key";
 
-interface Env {
-  Bindings: {
-    gate: KVNamespace;
-    AUTHENTICATION_TOKEN: string;
-  };
-}
+export type Bindings = {
+  gate: KVNamespace;
+  GateStorage: DurableObjectNamespace;
+  AUTHENTICATION_TOKEN: string;
+};
 
-const app = new Hono<Env>();
+const app = new Hono<{ Bindings: Bindings }>();
 app.use("*", logger());
 app.use(
   "*",
@@ -34,42 +34,23 @@ app.use("*", async (c, next) => {
   return await auth(c, next);
 });
 
-app.post("/api/keys/create", async (c, next) => {
-  const body = await c.req.json<CreateKeyParams>();
-  const { value, hash } = await createKey({ prefix: body.prefix });
-
-  const headers = getHeaders(c)
-
-  await c.env.gate.put(
-    value,
-    JSON.stringify(headers),
-    { metadata: body.metadata, expiration: body.expires }
-  );
-
-  return apiResponse(c, `Key created.`, 200, c.req.method, { value });
+app.post("/api/keys/create", async (c) => {
+  const body = await c.req.json<KeyCreateParams>();
+  const instance = new Key(c)
+  return await instance.create(body)
 });
 
-// app.get("/api/keys/verify", async (c, next) => {
-//   // const body = await c.req.json<VerifyKeyParams>()
+app.post("/api/keys/verify", async (c) => {
+  const body = await c.req.json<KeyVerifiyHashParams>();
+  const instance = new Key(c)
+  return await instance.verify(body)
+});
 
-//   // const key = await c.env.gate.get(body.key)
+// TODO: implement update endpoint
+app.post("/api/keys/update", async (c) => {
 
-//   // // const verified = await verifyKey({ key: "test", hex: data })
+})
 
-//   // return apiResponse(c, "Here you go", 200, c.req.method, {
-//   //   null,
-//   //   // verification
-//   // });
-// });
 
-// app.delete("/api/keys/delete", async (c, next) => {
-//   const body = await c.req.json()
-//   // const verification = await verifyKey({ key: "test", hex: data })
-
-//   // return apiResponse(c, "Here you go", 200, c.req.method, {
-//   //   null,
-//   //   // verification
-//   // });
-// });
-
+export { GateStorage } from "./storage";
 export default app;
