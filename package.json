@@ -1,5 +1,5 @@
 {
-  "name": "cloudgate",
+  "name": "cloud",
   "private": true,
   "scripts": {
     "build": "turbo build",
@@ -7,7 +7,7 @@
     "lint": "turbo lint",
     "format": "prettier --write \"**/*.{ts,tsx,md}\"",
     "gate:dev": "turbo run dev --filter=gate",
-    "gate:deploy": "turbo run publish --filter=gate"
+    "gate:publish": "pnpm -F gate run publish"
   },
   "devDependencies": {
     "prettier": "^3.1.0",
