@@ -3,5 +3,6 @@
     {
       "mode": "auto"
     }
-  ]
+  ],
+  "todo-tree.tree.disableCompactFolders": true
 }
