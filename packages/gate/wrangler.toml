@@ -4,7 +4,7 @@ compatibility_date = "2023-11-21"
 compatibility_flags = [ "nodejs_compat" ]
 
 [vars]
-AUTHENTICATION_TOKEN = "secret"
+AUTHENTICATION_TOKEN = "66Sd6bz3LSqOgU8BOqPPXFshJAD5nZnVZfhWV55DxHE="
 
 [[kv_namespaces]]
 binding = "gate"
