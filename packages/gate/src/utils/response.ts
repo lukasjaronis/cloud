@@ -5,7 +5,8 @@ export enum StatusCodes {
   "CREATED" = 201,
   "UNAUTHORIZED" = 401,
   "NOT_FOUND" = 404,
-  "BAD_REQUEST" = 400
+  "BAD_REQUEST" = 400,
+  "TOO_MANY_REQUESTS" = 429
 }
 
 export type ResponseReturnType<T> = {
