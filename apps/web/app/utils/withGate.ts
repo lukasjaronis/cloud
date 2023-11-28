@@ -30,10 +30,10 @@ export const withGate = (handler: RequestHandler): RequestHandler => {
       const json = await response.json() as GateVerifyReturnType
       
       if (json.data && !json.data.isValid) {
-        return new NextResponse('unauthorized', { status: 403 })
+        return new NextResponse('unauthorized', { status: 401 })
       }
     } else {
-      return new NextResponse('unauthorized', { status: 403 })
+      return new NextResponse('unauthorized', { status: 401 })
     }
 
     return handler(req);
