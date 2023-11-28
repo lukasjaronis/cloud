@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { StorageVerifyReturnType } from "./storage";
+import { Storage } from "./objects/storage";
 import { Context } from "hono";
 import { z } from "zod";
 import { Bindings } from ".";
@@ -40,27 +40,39 @@ export class Key {
       ? `${validatedParams.data.prefix}_${keyValue}`
       : keyValue;
 
-    const data = {
-      hash,
-      expires: validatedParams.data.expires,
-      uses: validatedParams.data.uses,
-    };
+    const {
+      prefix: _unused_prefix,
+      keyBytes: _unused_keybytes,
+      ...data
+    } = validatedParams.data;
 
-    const response = await this.fetchObject(identifier, this.c.req.url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(data),
-    });
+    const responses = await Promise.all([
+      this.fetchGateObject(identifier, this.c.req.url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          hash,
+          ...data,
+        }),
+      }),
+      this.fetchRateLimitObject(identifier, this.c.req.url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(data.rateLimit),
+      }),
+    ]);
 
-    if (response.ok) {
+    if (responses.every((response) => response.ok)) {
       return Response(this.c, StatusCodes.CREATED, this.c.req.method, null, {
         key,
       });
     }
 
-    return response as Response;
+    return responses as Response[];
   }
 
   async verify(params: KeyVerifyParams) {
@@ -76,28 +88,40 @@ export class Key {
       );
     }
 
-    const key = /_/.test(params.key) ? params.key.split("_")[1] : params.key;
+    const id = this.getObjectId({ key: params.key });
 
-    const took = this.take(key);
-    const id = this.getIdentifier(took);
-
-    const response = await this.fetchObject(id, this.c.req.url);
+    const response = await this.fetchGateObject(id, this.c.req.url);
 
     if (response.ok) {
       const json =
-        await response.json<ResponseReturnType<StorageVerifyReturnType>>();
-
-      if (json.data) {
-        /**
-         * Any invalidation will result in the object
-         * being deleted and thus throwing an invalid key response.
-         */
-        if (json.data.isDeleted) {
-          return Response(this.c, StatusCodes.OK, this.c.req.method, null, {
-            isValid: false,
+      await response.json<ResponseReturnType<Storage>>();
+      
+      // TODO: wut
+      if (json.data !== null) {
+        if (json.data.rateLimit !== null) {
+          const rateLimmitResponse = await this.fetchRateLimitObject(id, this.c.req.url, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ rateLimit: json.data.rateLimit }),
           });
+  
+          if (rateLimmitResponse.ok) {
+            const rate_limit_json = await rateLimmitResponse.json<ResponseReturnType<{ allowed: true }>>()
+            console.log({
+              rate_limit_json
+            })
+            if (rate_limit_json.data) {
+              if (!rate_limit_json.data.allowed) {
+                return Response(this.c, StatusCodes.OK, this.c.req.method, null, {
+                  isValid: false,
+                });
+              }
+            }
+          }
         }
-
+ 
         const isValid = await this.verifyHash({
           hash: json.data.hash,
           key: validatedParams.data.key,
@@ -107,18 +131,46 @@ export class Key {
           isValid,
         });
       } else {
-        return Response(
-          this.c,
-          StatusCodes.BAD_REQUEST,
-          this.c.req.method,
-          "There was a problem retrieving storage data.",
-          null
-        );
+        return Response(this.c, StatusCodes.OK, this.c.req.method, null, {
+          isValid: false,
+        });
       }
     }
 
     return response as Response;
   }
+
+  // async update(params: KeyUpdateParams) {
+  //   const validatedParams = keyUpdateSchema.safeParse(params);
+
+  //   if (!validatedParams.success) {
+  //     return Response(
+  //       this.c,
+  //       StatusCodes.BAD_REQUEST,
+  //       this.c.req.method,
+  //       validatedParams.error.issues,
+  //       null
+  //     );
+  //   }
+
+  //   const id = this.getObjectId({ key: params.key })
+
+  //   const { key: _, ...data } = params
+
+  //   const response = await this.fetchObject(id, this.c.req.url, {
+  //     method: 'POST',
+  //     headers: {
+  //       "Content-Type": "application/json",
+  //     },
+  //     body: JSON.stringify(data),
+  //   });
+
+  //   if (response.ok) {
+  //     return Response(this.c, StatusCodes.CREATED, this.c.req.method, null, null);
+  //   }
+  // }
+
+  // ------------------
 
   private async verifyHash(params: KeyVerifiyHashParams) {
     const validatedParams = keyVerifySchema.safeParse(params);
@@ -226,7 +278,7 @@ export class Key {
     return bytes;
   }
 
-  private async fetchObject(
+  private async fetchGateObject(
     id: string,
     input: RequestInfo<unknown, CfProperties<unknown>>,
     init?: RequestInit<CfProperties<unknown>>
@@ -245,6 +297,34 @@ export class Key {
       );
     }
   }
+
+  private async fetchRateLimitObject(
+    id: string,
+    input: RequestInfo<unknown, CfProperties<unknown>>,
+    init?: RequestInit<CfProperties<unknown>>
+  ) {
+    try {
+      const objectId = this.c.env.RateLimitStorage.idFromName(id);
+      const object = this.c.env.RateLimitStorage.get(objectId);
+      return object.fetch(input, init);
+    } catch (error) {
+      return Response(
+        this.c,
+        StatusCodes.BAD_REQUEST,
+        this.c.req.method,
+        "Could not fetch ratelimiting storage object.",
+        null
+      );
+    }
+  }
+
+  private getObjectId(params: { key: string }) {
+    const key = /_/.test(params.key) ? params.key.split("_")[1] : params.key;
+
+    const took = this.take(key);
+    const id = this.getIdentifier(took);
+    return id;
+  }
 }
 
 const keyCreateSchema = z.object({
@@ -255,7 +335,18 @@ const keyCreateSchema = z.object({
   // Storage params
   expires: z.number().nullable(),
   uses: z.number().nullable(),
-  metadata: z.object({}).nullable()
+  metadata: z.object({}).nullable(),
+  rateLimit: z
+    .object({
+      /**
+       * Allowed requests per timeframe
+       *
+       * ex: 3 requests per 10 seconds
+       */
+      requests: z.number(),
+      timeframe: z.number(),
+    })
+    .nullable(),
 });
 
 export type KeyCreateParams = z.infer<typeof keyCreateSchema>;
@@ -272,3 +363,12 @@ const keyVerifyHashSchema = z.object({
 });
 
 export type KeyVerifiyHashParams = z.infer<typeof keyVerifyHashSchema>;
+
+const keyUpdateSchema = z.object({
+  key: z.string(),
+  expires: z.number().nullable(),
+  uses: z.number().nullable(),
+  metadata: z.object({}).nullable(),
+});
+
+export type KeyUpdateParams = z.infer<typeof keyUpdateSchema>;

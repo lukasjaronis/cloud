@@ -4,13 +4,12 @@ import { cors } from "hono/cors";
 import { bearerAuth } from "hono/bearer-auth";
 import {
   DurableObjectNamespace,
-  KVNamespace,
 } from "@cloudflare/workers-types";
 import { Key, KeyCreateParams, KeyVerifiyHashParams } from "./key";
 
 export type Bindings = {
-  gate: KVNamespace;
   GateStorage: DurableObjectNamespace;
+  RateLimitStorage: DurableObjectNamespace
   AUTHENTICATION_TOKEN: string;
 };
 
@@ -46,11 +45,13 @@ app.post("/api/keys/verify", async (c) => {
   return await instance.verify(body)
 });
 
-// TODO: implement update endpoint
-app.post("/api/keys/update", async (c) => {
+// app.post("/api/keys/update", async (c) => {
+//   const body = await c.req.json<KeyUpdateParams>()
+//   const instance = new Key(c)
+//   return await instance.update(body)
+// })
 
-})
 
-
-export { GateStorage } from "./storage";
+export { GateStorage } from "./objects/storage";
+export { RateLimitStorage } from './objects/rate_limit'
 export default app;
