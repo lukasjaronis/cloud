@@ -6,15 +6,18 @@ compatibility_flags = [ "nodejs_compat" ]
 [vars]
 AUTHENTICATION_TOKEN = "66Sd6bz3LSqOgU8BOqPPXFshJAD5nZnVZfhWV55DxHE="
 
-[[kv_namespaces]]
-binding = "gate"
-id = "dd7807555d404ba8a81c37d0060ffe0b"
-preview_id = "5fa9629802c24d25a084c2a9e2e57720"
-
 [[durable_objects.bindings]]
 name = "GateStorage"
 class_name = "GateStorage"
 
+[[durable_objects.bindings]]
+name = "RateLimitStorage"
+class_name = "RateLimitStorage"
+
 [[migrations]]
 tag = "v1"
 new_classes = ["GateStorage"]
+
+[[migrations]]
+tag = "v1"
+new_classes = ["RateLimitStorage"]
