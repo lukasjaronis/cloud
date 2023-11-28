@@ -12,7 +12,7 @@ You must have a workers paid plan in order to use durable objects.
   - Strongly consistent storage
   - Data is replicated across cloudflares global network, resulting in very low latency during key verification.
 - Features
-  - [ ] Per-object rate limiting 
+  - [ ] Per-object rate limiting (uses its own durable object namespace to handle queues)
   - [x] Per-object number of uses before being destroyed
   - [x] Per-object expiration before being destroyed
 
