@@ -1,6 +1,6 @@
 name = "gate"
 main = "src/index.ts"
-compatibility_date = "2023-11-21"
+compatibility_date = "2023-11-06"
 compatibility_flags = [ "nodejs_compat" ]
 
 [vars]
@@ -16,8 +16,4 @@ class_name = "RateLimitStorage"
 
 [[migrations]]
 tag = "v1"
-new_classes = ["GateStorage"]
-
-[[migrations]]
-tag = "v1"
-new_classes = ["RateLimitStorage"]
+new_classes = ["GateStorage", "RateLimitStorage"]

@@ -4,14 +4,15 @@
   "private": true,
   "scripts": {
     "dev": "wrangler dev src/index.ts",
-    "publish": "wrangler publish --minify src/index.ts"
+    "publish": "wrangler deploy --minify src/index.ts"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "4.20231121.0",
     "wrangler": "3.17.1"
   },
   "dependencies": {
-    "hono": "^3.10.2",
+    "@axiomhq/js": "1.0.0-rc.1",
+    "hono": "^3.10.3",
     "zod": "^3.22.4"
   }
 }
