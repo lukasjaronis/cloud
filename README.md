@@ -10,7 +10,7 @@ You must have a workers paid plan in order to use durable objects.
 - Cheap and intended to be self-hosted
 - Powered by durable objects
   - Strongly consistent storage
-  - Data is replicated across cloudflares global network, resulting in very low latency during key verification.
+  - Uses Cache API to cache responses that results in low latency DO fetches.
 - Features
   - [ ] Per-object rate limiting (uses its own durable object namespace to handle queues)
   - [x] Per-object number of uses before being destroyed
