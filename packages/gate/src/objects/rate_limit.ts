@@ -1,7 +1,7 @@
 import { DurableObjectState } from "@cloudflare/workers-types";
 import { Hono } from "hono";
 import { Bindings } from "..";
-import { Response, StatusCodes } from "../utils/response";
+import { APIResponse, StatusCodes } from "../utils/response";
 import { z } from "zod";
 import { Storage, storageSchema } from "./storage";
 
@@ -25,7 +25,7 @@ export class RateLimitStorage {
         queue: [],
       });
 
-      return Response(c, StatusCodes.CREATED, c.req.method, null, null);
+      return APIResponse( StatusCodes.CREATED, c.req.method, null, null);
     });
 
     /**
@@ -44,8 +44,7 @@ export class RateLimitStorage {
       }).safeParse(body)
 
       if (!validatedSchema.success) {
-        return Response(
-          c,
+        return APIResponse(
           StatusCodes.BAD_REQUEST,
           c.req.method,
           validatedSchema.error.issues,
@@ -57,7 +56,7 @@ export class RateLimitStorage {
       const object = Object.fromEntries(data) as { queue: number[] };
       let queue = object.queue;
 
-      return Response(c, StatusCodes.OK, c.req.method, null, {
+      return APIResponse(StatusCodes.OK, c.req.method, null, {
         allowed: true,
       });
 
