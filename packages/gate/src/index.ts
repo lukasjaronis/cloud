@@ -66,11 +66,28 @@ app.post("/api/keys/verify", async (c) => {
   return await instance.verify(body);
 });
 
-// app.post("/api/keys/update", async (c) => {
-//   const body = await c.req.json<KeyUpdateParams>()
-//   const instance = new Key(c)
-//   return await instance.update(body)
-// })
+app.get('/api/keys/:key/storage', async (c) => {
+  const url = new URL(c.req.url)
+  const { key } = c.req.param()
+  
+  const instance = new Key(c);
+  const keyIdentifier = instance.getObjectId({ key })
+
+  const CACHE_KEY = getCacheKey(keyIdentifier)
+
+  const objectId = c.env.GateStorage.idFromName(keyIdentifier);
+  const object = c.env.GateStorage.get(objectId);
+
+  const response = await object.fetch(`${url.origin}/api/storage`)
+  let json = await response.json<ResponseReturnType<Storage>>()
+
+  const cachedResponse = await caches.default.match(CACHE_KEY)
+
+  return c.json({
+    storage: json.data,
+    cachedStorage: cachedResponse && cachedResponse.ok ? await cachedResponse.json() : null
+  })
+})
 
 export { GateStorage } from "./objects/storage";
 export { RateLimitStorage } from "./objects/rate_limit";
