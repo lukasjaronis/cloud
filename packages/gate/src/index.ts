@@ -4,10 +4,12 @@ import { cors } from "hono/cors";
 import { bearerAuth } from "hono/bearer-auth";
 import {
   DurableObjectNamespace,
-  Response,
 } from "@cloudflare/workers-types";
 import { Key, KeyCreateParams, KeyVerifiyHashParams } from "./key";
 import { metrics } from "./metrics/axiom";
+import { getCacheKey } from "./utils/cache";
+import { ResponseReturnType } from "./utils/response";
+import { Storage } from "./objects/storage";
 
 /**
  * Not sure why .default is not typed with the latest versions.
@@ -19,6 +21,7 @@ declare global {
     default: {
       put(request: Request | string, response: Response): Promise<undefined>;
       match(request: Request | string): Promise<Response | undefined>;
+      delete(cacheName: string): Promise<boolean>
     };
   }
 }

@@ -1,24 +1,21 @@
 import crypto from "node:crypto";
 import { Storage } from "./objects/storage";
 import { Context } from "hono";
-import { z } from "zod";
+import { ZodSchema, z } from "zod";
 import { Bindings } from ".";
-import {
-  Response as APIResponse,
-  ResponseReturnType,
-  StatusCodes,
-} from "./utils/response";
+import { APIResponse, ResponseReturnType, StatusCodes } from "./utils/response";
 import {
   CfProperties,
   RequestInfo,
   RequestInit,
-  Response,
 } from "@cloudflare/workers-types";
 import { Metric, metrics } from "./metrics/axiom";
+import { getCacheKey } from "./utils/cache";
 
 export const RESPONSE_CACHE_DURATION = 5 * 60;
 
 export class Key {
+  private readonly timestamp = Math.floor(Date.now() / 1000);
   private metrics: Metric = metrics;
   private c: Context<{ Bindings: Bindings }>;
 
@@ -31,7 +28,6 @@ export class Key {
 
     if (!validatedParams.success) {
       return APIResponse(
-        this.c,
         StatusCodes.BAD_REQUEST,
         this.c.req.method,
         validatedParams.error.issues,
@@ -61,8 +57,10 @@ export class Key {
 
     const beginObjectsFetch = performance.now();
 
-    const responses = await Promise.all([
-      this.fetchGateObject(identifier, this.c.req.url, {
+    const gateObjectResponse = await this.fetchGateObject(
+      identifier,
+      this.c.req.url + '/object',
+      {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -71,36 +69,38 @@ export class Key {
           hash,
           ...data,
         }),
-      }),
-      this.fetchRateLimitObject(identifier, this.c.req.url, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(data.rateLimit),
-      }),
-    ]);
+      }
+    ) as Response
+
+    // Think about this more
+    // if (data.rateLimit !== null) {
+    //   await this.fetchRateLimitObject(identifier, this.c.req.url, {
+    //     method: "POST",
+    //     headers: {
+    //       "Content-Type": "application/json",
+    //     },
+    //     body: JSON.stringify(data.rateLimit),
+    //   });
+    // }
 
     this.metrics.send("metric.key.create", {
       latency: performance.now() - beginObjectsFetch,
     });
 
-    if (responses.every((response) => response.ok)) {
-      return APIResponse(this.c, StatusCodes.CREATED, this.c.req.method, null, {
+    if (gateObjectResponse.ok) {
+      return APIResponse(StatusCodes.CREATED, this.c.req.method, null, {
         key,
       });
     }
 
-    return responses as APIResponse[];
+    return gateObjectResponse;
   }
 
-  // TODO: refactor if/else later
   async verify(params: KeyVerifyParams) {
     const validatedParams = keyVerifySchema.safeParse(params);
 
     if (!validatedParams.success) {
       return APIResponse(
-        this.c,
         StatusCodes.BAD_REQUEST,
         this.c.req.method,
         validatedParams.error.issues,
@@ -110,173 +110,122 @@ export class Key {
 
     const id = this.getObjectId({ key: params.key });
 
+    const CACHE_KEY = getCacheKey(id)
+  
     const beginGateObjectFetch = performance.now();
-
-    const CACHE_KEY =
-      "https://cf.cache/v1/" +
-      btoa(JSON.stringify({ id, input: this.c.req.url }));
-
-    const cachedResponse = await caches.default.match(CACHE_KEY);
+    const cachedResponse = await caches.default.match(CACHE_KEY) as Response | undefined
 
     if (cachedResponse && cachedResponse.ok) {
-      const json = await cachedResponse.json<ResponseReturnType<Storage>>();
+      const json = await cachedResponse.json<ResponseReturnType<Storage>>()
+  
+      if (json.data !== null) {
+        let freshObject: Storage = json.data
 
-      if (json.data === null) {
-        return APIResponse(this.c, StatusCodes.OK, this.c.req.method, null, {
-          isValid: false,
+        if (json.data.uses !== null) {
+
+          if (json.data.uses == 0) {
+            // Invalidate key & destroy object
+            this.c.executionCtx.waitUntil(Promise.all([
+              await caches.default.delete(CACHE_KEY),
+              this.fetchGateObject(id, this.c.req.url + '/destroy')
+            ]))
+
+            return APIResponse(StatusCodes.OK, this.c.req.method, null, {
+              isValid: false
+            })
+          }
+
+          if (json.data.uses > 0) {
+            freshObject['uses'] = json.data.uses - 1
+
+            // Sync object
+            this.c.executionCtx.waitUntil(this.fetchGateObject(id, this.c.req.url + '/sync', {
+              method: 'POST',
+              headers: {
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify(freshObject)
+            }))
+          }
+        }
+
+        // Create a new cached response
+        const newCacheResponse = new Response(JSON.stringify({ data: freshObject }), {
+          status: cachedResponse.status,
+          headers: cachedResponse.headers,
+        });
+
+        // We update the cache with the new fresh object for the next user
+        await caches.default.put(CACHE_KEY, newCacheResponse)
+        
+        const isValid = await this.verifyHash({
+          hash: json.data.hash,
+          key: validatedParams.data.key,
+        });
+
+        this.metrics.send("metric.key.verify", {
+          latency: performance.now() - beginGateObjectFetch,
+          cached: true,
+          data: freshObject
+        });
+
+        return APIResponse(StatusCodes.OK, this.c.req.method, null, {
+          isValid,
         });
       }
 
-      if (json.data.rateLimit !== null) {
-        const rateLimmitResponse = await this.fetchRateLimitObject(
-          id,
-          this.c.req.url,
-          {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({ rateLimit: json.data.rateLimit }),
-          }
-        );
-
-        if (rateLimmitResponse.ok) {
-          const rate_limit_json =
-            await rateLimmitResponse.json<
-              ResponseReturnType<{ allowed: true }>
-            >();
-
-          if (rate_limit_json.data && !rate_limit_json.data.allowed) {
-            return APIResponse(
-              this.c,
-              StatusCodes.OK,
-              this.c.req.method,
-              null,
-              {
-                isValid: false,
-              }
-            );
-          }
-        }
-      }
-
-      const isValid = await this.verifyHash({
-        hash: json.data.hash,
-        key: validatedParams.data.key,
-      });
-
-      this.metrics.send("metric.key.verify", {
-        latency: performance.now() - beginGateObjectFetch,
-        rateLimitInvoked: !!json.data.rateLimit,
-        cached: true,
-      });
-
-      return APIResponse(this.c, StatusCodes.OK, this.c.req.method, null, {
-        isValid,
+      return APIResponse(StatusCodes.OK, this.c.req.method, null, {
+        isValid: false,
       });
     } else {
-      const response = await this.fetchGateObject(id, this.c.req.url, {
-        headers: { "Cache-Control": `max-age=${RESPONSE_CACHE_DURATION}` },
-      });
+      // Fetch DO
+      const gateStorageResponse = await this.fetchGateObject(id, this.c.req.url + '/object') as Response
 
-      await caches.default.put(CACHE_KEY, response.clone() as Response);
+      if (gateStorageResponse.ok) {
+        // Cache the fresh object response
+     
+        await caches.default.put(CACHE_KEY, gateStorageResponse.clone())
 
-      const json = await response.json<ResponseReturnType<Storage>>();
+        // Fresh object
+        const json = await gateStorageResponse.json<ResponseReturnType<Storage>>();
 
-      if (json.data === null) {
-        return APIResponse(this.c, StatusCodes.OK, this.c.req.method, null, {
+        /**
+         * Since this object is fresh, we don't need to evaluate limits because it has already been done
+         */
+
+        this.metrics.send("metric.key.verify", {
+          latency: performance.now() - beginGateObjectFetch,
+          cached: false,
+          data: json
+        });
+
+        if (json.data !== null) {
+          const isValid = await this.verifyHash({
+            hash: json.data.hash,
+            key: validatedParams.data.key,
+          });
+
+          return APIResponse(StatusCodes.OK, this.c.req.method, null, {
+            isValid,
+          });
+        }
+
+        return APIResponse(StatusCodes.OK, this.c.req.method, null, {
           isValid: false,
         });
       }
-
-      if (json.data.rateLimit !== null) {
-        const rateLimmitResponse = await this.fetchRateLimitObject(
-          id,
-          this.c.req.url,
-          {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({ rateLimit: json.data.rateLimit }),
-          }
-        );
-
-        if (rateLimmitResponse.ok) {
-          const rate_limit_json =
-            await rateLimmitResponse.json<
-              ResponseReturnType<{ allowed: true }>
-            >();
-
-          if (rate_limit_json.data && !rate_limit_json.data.allowed) {
-            return APIResponse(
-              this.c,
-              StatusCodes.OK,
-              this.c.req.method,
-              null,
-              {
-                isValid: false,
-              }
-            );
-          }
-        }
-      }
-
-      const isValid = await this.verifyHash({
-        hash: json.data.hash,
-        key: validatedParams.data.key,
-      });
-
-      this.metrics.send("metric.key.verify", {
-        latency: performance.now() - beginGateObjectFetch,
-        rateLimitInvoked: !!json.data.rateLimit,
-        cached: false,
-      });
-
-      return APIResponse(this.c, StatusCodes.OK, this.c.req.method, null, {
-        isValid,
-      });
     }
+    
+    return APIResponse(StatusCodes.OK, this.c.req.method, null, {
+      isValid: false,
+    });
   }
-
-  // async update(params: KeyUpdateParams) {
-  //   const validatedParams = keyUpdateSchema.safeParse(params);
-
-  //   if (!validatedParams.success) {
-  //     return APIResponse(
-  //       this.c,
-  //       StatusCodes.BAD_REQUEST,
-  //       this.c.req.method,
-  //       validatedParams.error.issues,
-  //       null
-  //     );
-  //   }
-
-  //   const id = this.getObjectId({ key: params.key })
-
-  //   const { key: _, ...data } = params
-
-  //   const response = await this.fetchObject(id, this.c.req.url, {
-  //     method: 'POST',
-  //     headers: {
-  //       "Content-Type": "application/json",
-  //     },
-  //     body: JSON.stringify(data),
-  //   });
-
-  //   if (response.ok) {
-  //     return APIResponse(this.c, StatusCodes.CREATED, this.c.req.method, null, null);
-  //   }
-  // }
-
-  // ------------------
-
+  
   private async verifyHash(params: KeyVerifiyHashParams) {
     const validatedParams = keyVerifySchema.safeParse(params);
 
     if (!validatedParams.success) {
       return APIResponse(
-        this.c,
         StatusCodes.BAD_REQUEST,
         this.c.req.method,
         validatedParams.error.issues,
@@ -383,16 +332,11 @@ export class Key {
     init?: RequestInit<CfProperties<unknown>>
   ) {
     try {
-      console.log({
-        input,
-      });
-
       const objectId = this.c.env.GateStorage.idFromName(id);
       const object = this.c.env.GateStorage.get(objectId);
       return object.fetch(input, init);
     } catch (error) {
       return APIResponse(
-        this.c,
         StatusCodes.BAD_REQUEST,
         this.c.req.method,
         "Could not fetch storage object.",
@@ -412,7 +356,6 @@ export class Key {
       return object.fetch(input, init);
     } catch (error) {
       return APIResponse(
-        this.c,
         StatusCodes.BAD_REQUEST,
         this.c.req.method,
         "Could not fetch ratelimiting storage object.",
@@ -421,7 +364,7 @@ export class Key {
     }
   }
 
-  private getObjectId(params: { key: string }) {
+  getObjectId(params: { key: string }) {
     const key = /_/.test(params.key) ? params.key.split("_")[1] : params.key;
 
     const took = this.take(key);
