@@ -1,0 +1,14 @@
+{
+  "name": "k6",
+  "version": "0.0.0",
+  "private": true,
+  "scripts": {
+    "k6:verify": "k6 run ./verify/index.ts"
+  },
+  "dependencies": {
+    "k6": "workspace:^"
+  },
+  "devDependencies": {
+    "@types/k6": "^0.47.3"
+  }
+}
