@@ -1,28 +1,51 @@
-import { Axiom } from '@axiomhq/js';
+import { Axiom } from "@axiomhq/js";
+import { z } from "zod";
+
+const metricSchema = z.object({
+  dataset: z.enum(["core"]),
+  fields: z.object({
+    event: z.string(),
+    latency: z.number().optional(),
+    custom: z.object({}).optional(),
+  }),
+});
+
+type MetricSchema = z.infer<typeof metricSchema>;
 
 export class Metric {
-  private axiom: Axiom = new Axiom({
-    token: "...",
-    orgId: "...",
-  })
+  private axiom: Axiom;
 
-  constructor() {}
+  constructor() {
+    this.axiom = new Axiom({
+      token: "...",
+      orgId: "...",
+    });
+  }
 
-  send(dataset: string, fields: {}) {
-    this.axiom.ingest(dataset, [{
-      _time: Date.now(),
-      ...fields
-    }])
+  ingest(params: MetricSchema) {
+    const validatedSchema = metricSchema.safeParse(params);
+
+    if (!validatedSchema.success) {
+      return new Error("Error parsing metric schema.");
+    }
+
+    const { dataset, fields } = validatedSchema.data;
+
+    this.axiom.ingest(dataset, [
+      {
+        _time: Date.now(),
+        ...fields,
+      },
+    ]);
   }
 
   async flush() {
     try {
-      await this.axiom.flush()
-      console.log("Metrics sent to Axiom.")
+      await this.axiom.flush();
     } catch (error) {
-      console.error("Could not flush.")
+      console.error("Could not flush.");
     }
   }
 }
 
-export const metrics = new Metric()
+export const metrics = new Metric();
