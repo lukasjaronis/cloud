@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import { Storage } from "./objects/storage";
 import { Context } from "hono";
-import { ZodSchema, z } from "zod";
+import { z } from "zod";
 import { Bindings } from ".";
 import { APIResponse, ResponseReturnType, StatusCodes } from "./utils/response";
 import {
@@ -10,17 +10,17 @@ import {
   RequestInit,
 } from "@cloudflare/workers-types";
 import { Metric, metrics } from "./metrics/axiom";
-import { getCacheKey } from "./utils/cache";
-
-export const RESPONSE_CACHE_DURATION = 5 * 60;
+import { dataFactory } from "./utils/factory";
 
 export class Key {
-  private readonly timestamp = Math.floor(Date.now() / 1000);
-  private metrics: Metric = metrics;
   private c: Context<{ Bindings: Bindings }>;
+  private metrics: Metric;
+  private url: URL;
 
   constructor(c: Context<{ Bindings: Bindings }>) {
     this.c = c;
+    this.metrics = metrics;
+    this.url = new URL(c.req.url);
   }
 
   async create(params: KeyCreateParams) {
@@ -29,9 +29,7 @@ export class Key {
     if (!validatedParams.success) {
       return APIResponse(
         StatusCodes.BAD_REQUEST,
-        this.c.req.method,
         validatedParams.error.issues,
-        null
       );
     }
 
@@ -55,11 +53,11 @@ export class Key {
       ...data
     } = validatedParams.data;
 
-    const beginObjectsFetch = performance.now();
+    const t0 = performance.now();
 
-    const gateObjectResponse = await this.fetchGateObject(
+    const response = (await this.fetchGateObject(
       identifier,
-      this.c.req.url + '/object',
+      this.url.origin + "/object/create",
       {
         method: "POST",
         headers: {
@@ -70,7 +68,7 @@ export class Key {
           ...data,
         }),
       }
-    ) as Response
+    )) as Response;
 
     // Think about this more
     // if (data.rateLimit !== null) {
@@ -83,160 +81,175 @@ export class Key {
     //   });
     // }
 
-    this.metrics.send("metric.key.create", {
-      latency: performance.now() - beginObjectsFetch,
+    this.metrics.ingest({
+      dataset: "core",
+      fields: {
+        event: "key-create",
+        latency: performance.now() - t0,
+      },
     });
 
-    if (gateObjectResponse.ok) {
-      return APIResponse(StatusCodes.CREATED, this.c.req.method, null, {
+    if (response.ok) {
+      return APIResponse(StatusCodes.CREATED, {
         key,
       });
     }
 
-    return gateObjectResponse;
+    return response;
   }
 
-  async verify(params: KeyVerifyParams) {
-    const validatedParams = keyVerifySchema.safeParse(params);
+  async verifyCold(
+    validatedBody: KeyVerifyParams,
+    objectId: string,
+    cachekey: string
+  ) {
+    const data = dataFactory<Storage>()
 
-    if (!validatedParams.success) {
-      return APIResponse(
-        StatusCodes.BAD_REQUEST,
-        this.c.req.method,
-        validatedParams.error.issues,
-        null
-      );
-    }
+    const t0 = performance.now();
 
-    const id = this.getObjectId({ key: params.key });
+    const response = (await this.fetchGateObject(
+      objectId,
+      this.url.origin + "/object/verify"
+    )) as Response;
 
-    const CACHE_KEY = getCacheKey(id)
-  
-    const beginGateObjectFetch = performance.now();
-    const cachedResponse = await caches.default.match(CACHE_KEY) as Response | undefined
+    if (response.ok) {
+      // Clone before reading stream
+      await caches.default.put(cachekey, response.clone());
 
-    if (cachedResponse && cachedResponse.ok) {
-      const json = await cachedResponse.json<ResponseReturnType<Storage>>()
-  
+      const json = await response.json<ResponseReturnType<Storage>>();
+
       if (json.data !== null) {
-        let freshObject: Storage = json.data
+        data.setInitial(json.data);
 
-        if (json.data.uses !== null) {
+        if (json.data.uses !== null && json.data.uses == 0) {
+          return APIResponse(
+            StatusCodes.OK,
+            data.response<{ valid: boolean }>({ valid: false })
+          );
+        } 
 
-          if (json.data.uses == 0) {
-            // Invalidate key & destroy object
-            this.c.executionCtx.waitUntil(Promise.all([
-              await caches.default.delete(CACHE_KEY),
-              this.fetchGateObject(id, this.c.req.url + '/destroy')
-            ]))
+        const isValid = await this.verifyHash(validatedBody.key, data.get("hash") as string);
 
-            return APIResponse(StatusCodes.OK, this.c.req.method, null, {
-              isValid: false
-            })
-          }
-
-          if (json.data.uses > 0) {
-            freshObject['uses'] = json.data.uses - 1
-
-            // Sync object
-            this.c.executionCtx.waitUntil(this.fetchGateObject(id, this.c.req.url + '/sync', {
-              method: 'POST',
-              headers: {
-                "Content-Type": "application/json",
-              },
-              body: JSON.stringify(freshObject)
-            }))
-          }
-        }
-
-        // Create a new cached response
-        const newCacheResponse = new Response(JSON.stringify({ data: freshObject }), {
-          status: cachedResponse.status,
-          headers: cachedResponse.headers,
+        this.metrics.ingest({
+          dataset: "core",
+          fields: {
+            event: "key-verify-not-cached",
+            latency: performance.now() - t0,
+            custom: json,
+          },
         });
 
-        // We update the cache with the new fresh object for the next user
-        await caches.default.put(CACHE_KEY, newCacheResponse)
-        
-        const isValid = await this.verifyHash({
-          hash: json.data.hash,
-          key: validatedParams.data.key,
-        });
-
-        this.metrics.send("metric.key.verify", {
-          latency: performance.now() - beginGateObjectFetch,
-          cached: true,
-          data: freshObject
-        });
-
-        return APIResponse(StatusCodes.OK, this.c.req.method, null, {
-          isValid,
-        });
-      }
-
-      return APIResponse(StatusCodes.OK, this.c.req.method, null, {
-        isValid: false,
-      });
-    } else {
-      // Fetch DO
-      const gateStorageResponse = await this.fetchGateObject(id, this.c.req.url + '/object') as Response
-
-      if (gateStorageResponse.ok) {
-        // Cache the fresh object response
-     
-        await caches.default.put(CACHE_KEY, gateStorageResponse.clone())
-
-        // Fresh object
-        const json = await gateStorageResponse.json<ResponseReturnType<Storage>>();
-
-        /**
-         * Since this object is fresh, we don't need to evaluate limits because it has already been done
-         */
-
-        this.metrics.send("metric.key.verify", {
-          latency: performance.now() - beginGateObjectFetch,
-          cached: false,
-          data: json
-        });
-
-        if (json.data !== null) {
-          const isValid = await this.verifyHash({
-            hash: json.data.hash,
-            key: validatedParams.data.key,
-          });
-
-          return APIResponse(StatusCodes.OK, this.c.req.method, null, {
-            isValid,
-          });
-        }
-
-        return APIResponse(StatusCodes.OK, this.c.req.method, null, {
+        return APIResponse(
+          StatusCodes.OK,
+          data.response<{ valid: boolean; remaining?: number }>({
+            valid: isValid,
+            remaining: data.get("uses") as number,
+          }),
+        );
+      } else {
+        return APIResponse(StatusCodes.OK, {
           isValid: false,
         });
       }
     }
-    
-    return APIResponse(StatusCodes.OK, this.c.req.method, null, {
-      isValid: false,
-    });
-  }
-  
-  private async verifyHash(params: KeyVerifiyHashParams) {
-    const validatedParams = keyVerifySchema.safeParse(params);
 
-    if (!validatedParams.success) {
+    return response
+  }
+
+  async verifyHot(
+    cachedResponse: Response,
+    validatedBody: KeyVerifyParams,
+    objectId: string,
+    cacheKey: string
+  ) {
+    const data = dataFactory<Storage>()
+
+    const t0 = performance.now();
+    const json = await cachedResponse.json<ResponseReturnType<Storage>>();
+
+    if (json.data !== null) {
+      data.setInitial(json.data);
+
+      if (json.data.uses !== null) {
+        if (json.data.uses == 0) {
+          this.c.executionCtx.waitUntil(
+            Promise.all([
+              // Invalidate cache
+              caches.default.delete(cacheKey),
+              // Destroy object
+              this.fetchGateObject(
+                objectId,
+                this.url.origin + "/object/destroy"
+              ),
+            ])
+          );
+
+          return APIResponse(
+            StatusCodes.OK, data.response<{ valid: boolean }>({ valid: false })
+          )
+        }
+
+        if (json.data.uses > 0) {
+          data.set("uses", json.data.uses - 1);
+
+          // Sync object in the background
+          this.c.executionCtx.waitUntil(
+            this.fetchGateObject(objectId, this.url.origin + "/object/sync", {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify(data.object()),
+            })
+          );
+        }
+      }
+
+      // Create a new cached response
+      const newCacheResponse = new Response(
+        JSON.stringify({ data: data.object() }),
+        {
+          status: cachedResponse.status,
+          headers: cachedResponse.headers,
+        }
+      );
+
+      // Cache is set before handler termination
+      this.c.executionCtx.waitUntil(
+        caches.default.put(cacheKey, newCacheResponse)
+      );
+
+      this.metrics.ingest({
+        dataset: "core",
+        fields: {
+          event: "key-verify-cached",
+          latency: performance.now() - t0,
+        },
+      });
+
+      const isValid = await this.verifyHash(validatedBody.key, data.get('hash') as string);
+
       return APIResponse(
-        StatusCodes.BAD_REQUEST,
-        this.c.req.method,
-        validatedParams.error.issues,
-        null
+        StatusCodes.OK,
+        data.response<{ valid: boolean; remaining?: number }>({
+          valid: isValid,
+          remaining: data.get("uses") as number,
+        })
       );
     }
 
+    return APIResponse(
+      StatusCodes.OK, data.response<{ valid: boolean }>({ valid: false })
+    )
+  }
+
+  private async verifyHash(key: string, hash: Storage['hash']) {
+    const t0 = performance.now();
+
     let prefix = "";
-    let value = params.key;
-    if (params.key.includes("_")) {
-      const splitKey = params.key.split("_");
+    let value = key;
+    if (key.includes("_")) {
+      const splitKey = key.split("_");
       prefix = splitKey[0];
       value = splitKey[1];
     }
@@ -259,10 +272,19 @@ export class Key {
       .map((byte) => byte.toString(16).padStart(2, "0"))
       .join("");
 
-    return computedHash === params.hash;
+    this.metrics.ingest({
+      dataset: "core",
+      fields: {
+        event: "key-verify-hash",
+        latency: performance.now() - t0,
+      },
+    });
+
+    return computedHash === hash;
   }
 
   private computeKey(params: { prefix?: string; keyBytes?: number }) {
+    const t0 = performance.now();
     const prefix = params?.prefix
       ? new TextEncoder().encode(params.prefix)
       : new Uint8Array();
@@ -287,6 +309,14 @@ export class Key {
      */
     const took = this.take(keyValue);
     const identifier = this.getIdentifier(took);
+
+    this.metrics.ingest({
+      dataset: "core",
+      fields: {
+        event: "key-compute",
+        latency: performance.now() - t0,
+      },
+    });
 
     return {
       identifier,
@@ -326,6 +356,14 @@ export class Key {
     return bytes;
   }
 
+  getObjectId(params: { key: string }) {
+    const key = /_/.test(params.key) ? params.key.split("_")[1] : params.key;
+
+    const took = this.take(key);
+    const id = this.getIdentifier(took);
+    return id;
+  }
+
   private async fetchGateObject(
     id: string,
     input: RequestInfo<unknown, CfProperties<unknown>>,
@@ -338,9 +376,8 @@ export class Key {
     } catch (error) {
       return APIResponse(
         StatusCodes.BAD_REQUEST,
-        this.c.req.method,
+        null,
         "Could not fetch storage object.",
-        null
       );
     }
   }
@@ -357,23 +394,14 @@ export class Key {
     } catch (error) {
       return APIResponse(
         StatusCodes.BAD_REQUEST,
-        this.c.req.method,
+        null,
         "Could not fetch ratelimiting storage object.",
-        null
       );
     }
   }
-
-  getObjectId(params: { key: string }) {
-    const key = /_/.test(params.key) ? params.key.split("_")[1] : params.key;
-
-    const took = this.take(key);
-    const id = this.getIdentifier(took);
-    return id;
-  }
 }
 
-const keyCreateSchema = z.object({
+export const keyCreateSchema = z.object({
   // Key compute params
   prefix: z.string().optional(),
   keyBytes: z.number().optional(),
@@ -397,13 +425,13 @@ const keyCreateSchema = z.object({
 
 export type KeyCreateParams = z.infer<typeof keyCreateSchema>;
 
-const keyVerifySchema = z.object({
+export const keyVerifySchema = z.object({
   key: z.string(),
 });
 
 export type KeyVerifyParams = z.infer<typeof keyVerifySchema>;
 
-const keyVerifyHashSchema = z.object({
+export const keyVerifyHashSchema = z.object({
   hash: z.string(),
   key: z.string(),
 });

@@ -25,7 +25,7 @@ export class RateLimitStorage {
         queue: [],
       });
 
-      return APIResponse( StatusCodes.CREATED, c.req.method, null, null);
+      return APIResponse( StatusCodes.CREATED, null, null);
     });
 
     /**
@@ -46,7 +46,6 @@ export class RateLimitStorage {
       if (!validatedSchema.success) {
         return APIResponse(
           StatusCodes.BAD_REQUEST,
-          c.req.method,
           validatedSchema.error.issues,
           null
         );
@@ -56,7 +55,7 @@ export class RateLimitStorage {
       const object = Object.fromEntries(data) as { queue: number[] };
       let queue = object.queue;
 
-      return APIResponse(StatusCodes.OK, c.req.method, null, {
+      return APIResponse(StatusCodes.OK, null, {
         allowed: true,
       });
 

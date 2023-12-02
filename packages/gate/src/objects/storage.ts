@@ -3,6 +3,8 @@ import { Hono } from "hono";
 import { APIResponse, StatusCodes } from "../utils/response";
 import { z } from "zod";
 import { Bindings } from "..";
+import { Metric, metrics } from "../metrics/axiom";
+import { dataFactory } from "../utils/factory";
 
 export const storageSchema = z.object({
   hash: z.string(),
@@ -25,113 +27,147 @@ export const storageSchema = z.object({
 export type Storage = z.infer<typeof storageSchema>;
 
 export class GateStorage {
+  private metrics: Metric = metrics;
   private readonly timestamp = Math.floor(Date.now() / 1000);
+
   state: DurableObjectState;
   app: Hono<{ Bindings: Bindings }> = new Hono<{ Bindings: Bindings }>();
 
   constructor(state: DurableObjectState) {
     this.state = state;
 
-    /**
-     * Responsible for creating a durable object following the
-     * storageSchema schema.
-     */
-    this.app.post("/api/keys/create/object", async (c) => {
+    this.app.post("/object/create", async (c) => {
       const body = await c.req.json<Storage>();
 
       const validatedBody = storageSchema.safeParse(body);
 
       if (!validatedBody.success) {
-        return APIResponse(
-          StatusCodes.BAD_REQUEST,
-          c.req.method,
-          validatedBody.error.issues,
-          null
-        );
+        return APIResponse(StatusCodes.BAD_REQUEST, validatedBody.error.issues);
       }
 
+      const t0 = performance.now();
       try {
-        await Promise.allSettled(
-          Object.entries(validatedBody.data).map(async ([key, value]) => {
-            await this.state.storage.put(key, value);
-          })
-        );
+        await this.state.storage.put(validatedBody.data);
 
-        return APIResponse(StatusCodes.CREATED, c.req.method, null, null);
+        return APIResponse(StatusCodes.CREATED, null);
       } catch (error) {
         return APIResponse(
           StatusCodes.BAD_REQUEST,
-          c.req.method,
-          "Could not access storage.",
-          null
-        );
-      }
-    });
-
-    /**
-     * Responsible for evaluating and veriftying a durable object.
-     */
-    this.app.get("/api/keys/verify/object", async (c) => {
-      try {
-        const data = await this.state.storage.list();
-        const maybeStaleObject = Object.fromEntries(data) as Storage;
-        let freshObject = maybeStaleObject
-
-        if (maybeStaleObject.uses !== null) {
-          if (maybeStaleObject.uses == 0) {
-            await this.state.storage.deleteAll()
-          }
-
-          if (maybeStaleObject.uses > 0) {
-            freshObject["uses"] = maybeStaleObject.uses - 1;
-            await this.state.storage.put('uses', freshObject['uses'])
-          }
-        }
-
-        if (freshObject.expires !== null) {
-          if (this.timestamp > freshObject.expires) {
-            await this.state.storage.deleteAll()
-          }
-        }
-
-        return APIResponse(
-          StatusCodes.OK,
-          c.req.method,
           null,
-          freshObject
+          "Could not write to storage."
         );
-      } catch (error) {
-        return APIResponse(
-          StatusCodes.BAD_REQUEST,
-          c.req.method,
-          "Could not access storage.",
-          null
-        );
+      } finally {
+        this.metrics.ingest({
+          dataset: "core",
+          fields: {
+            event: "object-create",
+            latency: performance.now() - t0,
+          },
+        });
       }
     });
 
-    this.app.post('/api/keys/verify/sync', async (c) => {
-      const body = await c.req.json<Storage>();
-      for (const [key, value] of Object.entries(body)) {
-        await this.state.storage.put(key, value)
+    this.app.get("/object/verify", async () => {
+      const t0 = performance.now();
+
+      try {
+        const maybeStaleStorage = (await this.state.storage.list()) as Map<
+          keyof Storage,
+          Storage[keyof Storage]
+        >;
+        const freshStorage = new Map(maybeStaleStorage);
+
+        const uses = freshStorage.get('uses') as number
+        const expires = freshStorage.get('expires') as number
+        if (uses !== null) {
+          if (uses == 0) {
+            await this.state.storage.deleteAll()
+          } 
+
+          if (uses > 0) {
+            freshStorage.set('uses', uses - 1)
+          }
+        }
+
+        if (expires !== null) {
+          if (this.timestamp > expires) {
+            await this.state.storage.deleteAll()
+          }
+        }
+
+        const freshStorageObject = Object.fromEntries(freshStorage)
+
+        // Update storage
+        await this.state.storage.put(freshStorageObject)
+
+        return APIResponse(StatusCodes.OK, freshStorageObject)
+      } catch (error) {
+        return APIResponse(
+          StatusCodes.BAD_REQUEST,
+          null,
+          "Could not access storage."
+        );
+      } finally {
+        this.metrics.ingest({
+          dataset: "core",
+          fields: {
+            event: "object-verify",
+            latency: performance.now() - t0,
+          },
+        });
       }
-    })
+    });
 
-    this.app.get('/api/keys/verify/destroy', async (c) => {
-      await this.state.storage.deleteAll()
-    })
+    this.app.post("/object/sync", async (c) => {
+      const body = await c.req.json<Storage>();
 
-    this.app.get('/api/storage', async (c) => {
+      const t0 = performance.now();
+      try {
+        await this.state.storage.put(body);
+      } catch (error) {
+        return APIResponse(
+          StatusCodes.BAD_REQUEST,
+          null,
+          "Could not write to storage."
+        );
+      } finally {
+        this.metrics.ingest({
+          dataset: "core",
+          fields: {
+            event: "object-sync",
+            latency: performance.now() - t0,
+          },
+        });
+      }
+    });
+
+    this.app.get("/object/destroy", async () => {
+      const t0 = performance.now();
+      try {
+        await this.state.storage.deleteAll();
+      } catch (error) {
+        return APIResponse(
+          StatusCodes.BAD_REQUEST,
+          null,
+          "Could not destroy storage."
+        );
+      } finally {
+        this.metrics.ingest({
+          dataset: "core",
+          fields: {
+            event: "object-destroy",
+            latency: performance.now() - t0,
+          },
+        });
+      }
+    });
+
+    this.app.get("/object/storage", async (c) => {
       const data = await this.state.storage.list();
-      const storage = Object.fromEntries(data) as Storage; 
+      const storage = Object.fromEntries(data) as Storage;
 
-      return APIResponse(
-        StatusCodes.OK,
-        c.req.method,
-        null,
-        storage
-      );
-    })
+      return APIResponse(StatusCodes.OK, storage);
+    });
   }
 
   async fetch(request: Request) {

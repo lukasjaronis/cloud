@@ -8,18 +8,16 @@ export enum StatusCodes {
 }
 
 export type ResponseReturnType<T> = {
-  method: Request["method"];
   data: T | null;
   error: string | null;
 };
 
 export const APIResponse = <T>(
   statusCode: StatusCodes,
-  method: Request["method"],
-  error: string | Zod.IssueData[] | null,
-  data: T | null
+  data: T | null,
+  error?: string | Zod.IssueData[],
 ) => {
-  return new Response(JSON.stringify({ data, method, error }), {
+  return new Response(JSON.stringify({ data, error }), {
     headers: {
       "Access-Control-Allow-Origin": "*",
       "Access-Control-Max-Age": "86400",
