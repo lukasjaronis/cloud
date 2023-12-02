@@ -11,6 +11,7 @@ import {
 } from "@cloudflare/workers-types";
 import { Metric, metrics } from "./metrics/axiom";
 import { dataFactory } from "./utils/factory";
+import { getCacheKey } from "./utils/cache";
 
 export class Key {
   private c: Context<{ Bindings: Bindings }>;
@@ -70,7 +71,6 @@ export class Key {
       }
     )) as Response;
 
-    // Think about this more
     // if (data.rateLimit !== null) {
     //   await this.fetchRateLimitObject(identifier, this.c.req.url, {
     //     method: "POST",
@@ -90,6 +90,10 @@ export class Key {
     });
 
     if (response.ok) {
+      const CACHE_KEY = getCacheKey(identifier)
+
+      this.c.executionCtx.waitUntil(caches.default.put(CACHE_KEY, response.clone()))
+
       return APIResponse(StatusCodes.CREATED, {
         key,
       });

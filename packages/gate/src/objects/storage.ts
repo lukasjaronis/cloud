@@ -49,7 +49,7 @@ export class GateStorage {
       try {
         await this.state.storage.put(validatedBody.data);
 
-        return APIResponse(StatusCodes.CREATED, null);
+        return APIResponse(StatusCodes.CREATED, validatedBody.data);
       } catch (error) {
         return APIResponse(
           StatusCodes.BAD_REQUEST,
