@@ -12,7 +12,9 @@ import {
 import { getCacheKey } from "./utils/cache";
 import { APIResponse, ResponseReturnType, StatusCodes } from "./utils/response";
 import { Storage } from "./objects/storage";
-import { metrics } from "./metrics/axiom";
+import { Metrics } from "./metrics/axiom";
+import { ENV, envSchema } from "./env";
+import { NOOP } from "./utils/noop";
 
 /**
  * Not sure why .default is not typed with the latest versions.
@@ -29,13 +31,9 @@ declare global {
   }
 }
 
-export type Bindings = {
-  GateStorage: DurableObjectNamespace;
-  RateLimitStorage: DurableObjectNamespace;
-  AUTHENTICATION_TOKEN: string;
-};
+export let metrics: Metrics = new NOOP() as Metrics
 
-const app = new Hono<{ Bindings: Bindings }>();
+const app = new Hono<{ Bindings: ENV }>();
 
 app.use("*", async (c, next) => {
   logger();
@@ -49,7 +47,7 @@ app.use("*", async (c, next) => {
   });
 
   const auth = bearerAuth({
-    token: c.env.AUTHENTICATION_TOKEN,
+    token: c.env.AUTHENTICATION_TOKEN
   });
 
   await auth(c, next);
@@ -79,7 +77,7 @@ app.post("/api/keys/verify", async (c) => {
   const instance = new Key(c); 
 
   const objectId = instance.getObjectId({ key: body.key });
-  const CACHE_KEY = getCacheKey(objectId);
+  const CACHE_KEY = getCacheKey(c.env.WORKER_DOMAIN, objectId);
 
   const cachedResponse = await caches.default.match(CACHE_KEY);
 
@@ -102,7 +100,7 @@ app.get("/api/keys/:key/storage", async (c) => {
   const instance = new Key(c);
   const keyIdentifier = instance.getObjectId({ key });
 
-  const CACHE_KEY = getCacheKey(keyIdentifier);
+  const CACHE_KEY = getCacheKey(c.env.WORKER_DOMAIN, keyIdentifier);
 
   const objectId = c.env.GateStorage.idFromName(keyIdentifier);
   const object = c.env.GateStorage.get(objectId);
@@ -121,4 +119,19 @@ app.get("/api/keys/:key/storage", async (c) => {
 
 export { GateStorage } from "./objects/storage";
 export { RateLimitStorage } from "./objects/rate_limit";
-export default app;
+
+export default {
+  async fetch(request: Request, env: ENV, ctx: ExecutionContext) {
+    const validatedEnv = envSchema.safeParse(env)
+
+    if (!validatedEnv.success) {
+      return APIResponse(StatusCodes.BAD_REQUEST, null, "Invalid environment variables.")
+    }
+
+    if (!(metrics instanceof Metrics)) {
+      metrics = new Metrics(validatedEnv.data)
+    }
+
+    return app.fetch(request, validatedEnv.data, ctx)
+  }
+}

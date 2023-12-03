@@ -3,9 +3,6 @@ main = "src/index.ts"
 compatibility_date = "2023-10-30"
 compatibility_flags = [ "nodejs_compat" ]
 
-[vars]
-AUTHENTICATION_TOKEN = "66Sd6bz3LSqOgU8BOqPPXFshJAD5nZnVZfhWV55DxHE="
-
 [[durable_objects.bindings]]
 name = "GateStorage"
 class_name = "GateStorage"

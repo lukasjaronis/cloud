@@ -2,23 +2,24 @@ import crypto from "node:crypto";
 import { Storage } from "./objects/storage";
 import { Context } from "hono";
 import { z } from "zod";
-import { Bindings } from ".";
 import { APIResponse, ResponseReturnType, StatusCodes } from "./utils/response";
 import {
   CfProperties,
   RequestInfo,
   RequestInit,
 } from "@cloudflare/workers-types";
-import { Metric, metrics } from "./metrics/axiom";
 import { dataFactory } from "./utils/factory";
 import { getCacheKey } from "./utils/cache";
+import { ENV } from "./env";
+import { Metrics } from "./metrics/axiom";
+import { metrics } from ".";
 
 export class Key {
-  private c: Context<{ Bindings: Bindings }>;
-  private metrics: Metric;
+  private c: Context<{ Bindings: ENV }>;
+  private metrics: Metrics;
   private url: URL;
 
-  constructor(c: Context<{ Bindings: Bindings }>) {
+  constructor(c: Context<{ Bindings: ENV }>) {
     this.c = c;
     this.metrics = metrics;
     this.url = new URL(c.req.url);
@@ -90,7 +91,7 @@ export class Key {
     });
 
     if (response.ok) {
-      const CACHE_KEY = getCacheKey(identifier)
+      const CACHE_KEY = getCacheKey(this.c.env.WORKER_DOMAIN, identifier)
 
       this.c.executionCtx.waitUntil(caches.default.put(CACHE_KEY, response.clone()))
 

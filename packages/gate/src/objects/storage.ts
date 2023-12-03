@@ -2,9 +2,9 @@ import { DurableObjectState } from "@cloudflare/workers-types";
 import { Hono } from "hono";
 import { APIResponse, StatusCodes } from "../utils/response";
 import { z } from "zod";
-import { Bindings } from "..";
-import { Metric, metrics } from "../metrics/axiom";
-import { dataFactory } from "../utils/factory";
+import { ENV } from "../env";
+import { Metrics } from "../metrics/axiom";
+import { metrics } from "..";
 
 export const storageSchema = z.object({
   hash: z.string(),
@@ -27,11 +27,11 @@ export const storageSchema = z.object({
 export type Storage = z.infer<typeof storageSchema>;
 
 export class GateStorage {
-  private metrics: Metric = metrics;
+  private metrics: Metrics = metrics;
   private readonly timestamp = Math.floor(Date.now() / 1000);
 
   state: DurableObjectState;
-  app: Hono<{ Bindings: Bindings }> = new Hono<{ Bindings: Bindings }>();
+  app: Hono<{ Bindings: ENV }> = new Hono<{ Bindings: ENV }>();
 
   constructor(state: DurableObjectState) {
     this.state = state;

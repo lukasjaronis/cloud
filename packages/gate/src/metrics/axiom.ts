@@ -1,5 +1,7 @@
 import { Axiom } from "@axiomhq/js";
+import { Context } from "hono";
 import { z } from "zod";
+import { ENV } from "../env";
 
 const metricSchema = z.object({
   dataset: z.enum(["core"]),
@@ -12,13 +14,13 @@ const metricSchema = z.object({
 
 type MetricSchema = z.infer<typeof metricSchema>;
 
-export class Metric {
+export class Metrics {
   private axiom: Axiom;
 
-  constructor() {
+  constructor(env: ENV) {
     this.axiom = new Axiom({
-      token: "...",
-      orgId: "...",
+      token: env.AXIOM_TOKEN,
+      orgId: env.AXIOM_ORG_ID,
     });
   }
 
@@ -47,5 +49,3 @@ export class Metric {
     }
   }
 }
-
-export const metrics = new Metric();
