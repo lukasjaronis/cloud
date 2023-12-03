@@ -2,6 +2,7 @@ name = "gate"
 main = "src/index.ts"
 compatibility_date = "2023-10-30"
 compatibility_flags = [ "nodejs_compat" ]
+keep_vars = true
 
 [[durable_objects.bindings]]
 name = "GateStorage"
@@ -14,3 +15,11 @@ class_name = "RateLimitStorage"
 [[migrations]]
 tag = "v1"
 new_classes = ["GateStorage", "RateLimitStorage"]
+
+[env.dev]
+vars = { ENVIRONMENT = "development" }
+route = { pattern = "gate.dev.yebuntu.com", custom_domain = true }
+
+[env.production]
+vars = { ENVIRONMENT = "production" }
+route = { pattern = "gate.yebuntu.com", custom_domain = true}

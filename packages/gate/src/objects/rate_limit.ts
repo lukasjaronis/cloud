@@ -86,7 +86,6 @@ export class RateLimitStorage {
   }
 
   async fetch(request: Request) {
-    console.log("RateLimitStorage Fetch Invoked");
     return this.app.fetch(request);
   }
 }

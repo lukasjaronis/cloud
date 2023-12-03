@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "wrangler dev src/index.ts",
-    "publish": "wrangler deploy --minify src/index.ts"
+    "publish": "wrangler deploy src/index.ts"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "4.20231121.0",
