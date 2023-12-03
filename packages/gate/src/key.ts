@@ -11,17 +11,14 @@ import {
 import { dataFactory } from "./utils/factory";
 import { getCacheKey } from "./utils/cache";
 import { ENV } from "./env";
-import { Metrics } from "./config/metrics/axiom";
 import { metrics } from ".";
 
 export class Key {
   private c: Context<{ Bindings: ENV }>;
-  private metrics: Metrics;
   private url: URL;
 
   constructor(c: Context<{ Bindings: ENV }>) {
     this.c = c;
-    this.metrics = metrics;
     this.url = new URL(c.req.url);
   }
 
@@ -82,7 +79,7 @@ export class Key {
     //   });
     // }
 
-    this.metrics.ingest({
+    metrics.ingest({
       dataset: "core",
       fields: {
         event: "key-create",
@@ -135,7 +132,7 @@ export class Key {
 
         const isValid = await this.verifyHash(validatedBody.key, data.get("hash") as string);
 
-        this.metrics.ingest({
+        metrics.ingest({
           dataset: "core",
           fields: {
             event: "key-verify-not-cached",
@@ -224,7 +221,7 @@ export class Key {
         caches.default.put(cacheKey, newCacheResponse)
       );
 
-      this.metrics.ingest({
+      metrics.ingest({
         dataset: "core",
         fields: {
           event: "key-verify-cached",
@@ -277,7 +274,7 @@ export class Key {
       .map((byte) => byte.toString(16).padStart(2, "0"))
       .join("");
 
-    this.metrics.ingest({
+    metrics.ingest({
       dataset: "core",
       fields: {
         event: "key-verify-hash",
@@ -315,7 +312,7 @@ export class Key {
     const took = this.take(keyValue);
     const identifier = this.getIdentifier(took);
 
-    this.metrics.ingest({
+    metrics.ingest({
       dataset: "core",
       fields: {
         event: "key-compute",

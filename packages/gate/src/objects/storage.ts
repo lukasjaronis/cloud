@@ -4,7 +4,6 @@ import { APIResponse, StatusCodes } from "../utils/response";
 import { z } from "zod";
 import { ENV } from "../env";
 import { Metrics } from "../config/metrics/axiom";
-import { metrics } from "..";
 
 export const storageSchema = z.object({
   hash: z.string(),
@@ -27,14 +26,14 @@ export const storageSchema = z.object({
 export type Storage = z.infer<typeof storageSchema>;
 
 export class GateStorage {
-  private metrics: Metrics = metrics;
   private readonly timestamp = Math.floor(Date.now() / 1000);
-
+  private metrics: Metrics
   state: DurableObjectState;
   app: Hono<{ Bindings: ENV }> = new Hono<{ Bindings: ENV }>();
 
-  constructor(state: DurableObjectState) {
+  constructor(state: DurableObjectState, env: ENV) {
     this.state = state;
+    this.metrics = new Metrics(env)
 
     this.app.post("/object/create", async (c) => {
       const body = await c.req.json<Storage>();
