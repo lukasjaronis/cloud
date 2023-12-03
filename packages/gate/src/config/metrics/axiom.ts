@@ -1,7 +1,6 @@
 import { Axiom } from "@axiomhq/js";
-import { Context } from "hono";
 import { z } from "zod";
-import { ENV } from "../env";
+import { ENV } from "../../env";
 
 const metricSchema = z.object({
   dataset: z.enum(["core"]),
@@ -33,12 +32,10 @@ export class Metrics {
 
     const { dataset, fields } = validatedSchema.data;
 
-    this.axiom.ingest(dataset, [
-      {
-        _time: Date.now(),
+    this.axiom.ingest(dataset, {
+      _time: Date.now(),
         ...fields,
-      },
-    ]);
+    });
   }
 
   async flush() {
