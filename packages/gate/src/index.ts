@@ -12,7 +12,7 @@ import {
 import { getCacheKey } from "./utils/cache";
 import { APIResponse, ResponseReturnType, StatusCodes } from "./utils/response";
 import { Storage } from "./objects/storage";
-import { Metrics } from "./metrics/axiom";
+import { Metrics } from "./config/metrics/axiom";
 import { ENV, envSchema } from "./env";
 import { NOOP } from "./utils/noop";
 
@@ -125,7 +125,7 @@ export default {
     const validatedEnv = envSchema.safeParse(env)
 
     if (!validatedEnv.success) {
-      return APIResponse(StatusCodes.BAD_REQUEST, null, "Invalid environment variables.")
+      return APIResponse(StatusCodes.BAD_REQUEST, null, validatedEnv.error.issues)
     }
 
     if (!(metrics instanceof Metrics)) {

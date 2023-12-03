@@ -11,7 +11,7 @@ import {
 import { dataFactory } from "./utils/factory";
 import { getCacheKey } from "./utils/cache";
 import { ENV } from "./env";
-import { Metrics } from "./metrics/axiom";
+import { Metrics } from "./config/metrics/axiom";
 import { metrics } from ".";
 
 export class Key {

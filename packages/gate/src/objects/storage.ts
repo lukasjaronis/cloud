@@ -3,7 +3,7 @@ import { Hono } from "hono";
 import { APIResponse, StatusCodes } from "../utils/response";
 import { z } from "zod";
 import { ENV } from "../env";
-import { Metrics } from "../metrics/axiom";
+import { Metrics } from "../config/metrics/axiom";
 import { metrics } from "..";
 
 export const storageSchema = z.object({
