@@ -7,7 +7,9 @@ const metricSchema = z.object({
   fields: z.object({
     event: z.string(),
     latency: z.number().optional(),
-    custom: z.object({}).optional(),
+    custom: z.object({
+      data: z.any()
+    }).optional(),
   }),
 });
 

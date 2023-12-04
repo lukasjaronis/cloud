@@ -137,7 +137,9 @@ export class Key {
           fields: {
             event: "key-verify-not-cached",
             latency: performance.now() - t0,
-            custom: json,
+            custom: {
+              data: json
+            },
           },
         });
 

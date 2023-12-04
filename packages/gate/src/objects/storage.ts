@@ -111,7 +111,7 @@ export class GateStorage {
           dataset: "core",
           fields: {
             event: "object-verify",
-            latency: performance.now() - t0,
+            latency: performance.now() - t0
           },
         });
       }
