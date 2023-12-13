@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { DurableObjectNamespace } from "@cloudflare/workers-types";
+import { D1Database } from "@cloudflare/workers-types";
 
 export const envSchema = z.object({
   ENVIRONMENT: z.enum(['development', 'production']).default('development'),
@@ -7,8 +7,7 @@ export const envSchema = z.object({
   AXIOM_TOKEN: z.string(),
   AXIOM_ORG_ID: z.string(),
   AUTHENTICATION_TOKEN: z.string(),
-  GateStorage: z.custom<DurableObjectNamespace>((namespace) => typeof namespace === "object"),
-  RateLimitStorage: z.custom<DurableObjectNamespace>((namespace) => typeof namespace === "object")
+  GateDB: z.custom<D1Database>()
 })
 
 export type ENV = z.infer<typeof envSchema>

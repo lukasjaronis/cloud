@@ -1,20 +1,13 @@
 name = "gate"
 main = "src/index.ts"
 compatibility_date = "2023-10-30"
-compatibility_flags = [ "nodejs_compat" ]
+compatibility_flags = [ "nodejs_compat"]
 keep_vars = true
 
-[[durable_objects.bindings]]
-name = "GateStorage"
-class_name = "GateStorage"
-
-[[durable_objects.bindings]]
-name = "RateLimitStorage"
-class_name = "RateLimitStorage"
-
-[[migrations]]
-tag = "v1"
-new_classes = ["GateStorage", "RateLimitStorage"]
+[[d1_databases]]
+binding = "GateDB"
+database_name = "GateDB"
+database_id = "f0dc7796-6f12-435c-a7f7-63652ef29857"
 
 [env.dev]
 vars = { ENVIRONMENT = "development" }
@@ -23,3 +16,4 @@ route = { pattern = "gate.dev.yebuntu.com", custom_domain = true }
 [env.production]
 vars = { ENVIRONMENT = "production" }
 route = { pattern = "gate.yebuntu.com", custom_domain = true}
+logpush = true

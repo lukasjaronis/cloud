@@ -4,7 +4,12 @@
   "private": true,
   "scripts": {
     "dev": "wrangler dev src/index.ts",
-    "publish": "wrangler deploy src/index.ts"
+    "publish": "wrangler deploy src/index.ts",
+    "db:migrate": "wrangler d1 execute GateDB --file src/db/schema.sql --local",
+    "db:migrate:prod": "wrangler d1 execute GateDB --file src/db/schema.sql",
+    "db:show": "wrangler d1 execute GateDB --command \"SELECT name FROM sqlite_schema WHERE type ='table'\" --local",
+    "db:show:keys": "wrangler d1 execute GateDB --command \"SELECT * FROM keys\" --local",
+    "db:show:rl": "wrangler d1 execute GateDB --command \"SELECT * FROM rate_limits\" --local"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "4.20231121.0",
