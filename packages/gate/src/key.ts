@@ -1,25 +1,19 @@
 import crypto from "node:crypto";
-import { Storage } from "./objects/storage";
 import { Context } from "hono";
 import { z } from "zod";
-import { APIResponse, ResponseReturnType, StatusCodes } from "./utils/response";
-import {
-  CfProperties,
-  RequestInfo,
-  RequestInit,
-} from "@cloudflare/workers-types";
+import { APIResponse, Errors, StatusCodes } from "./utils/response";
 import { dataFactory } from "./utils/factory";
-import { getCacheKey } from "./utils/cache";
+import { Cache } from "./utils/cache";
 import { ENV } from "./env";
 import { metrics } from ".";
+import { DBKeyReturnType, dbKeyReturnSchema } from "./db/types";
 
 export class Key {
   private c: Context<{ Bindings: ENV }>;
-  private url: URL;
+  private cache = new Cache()
 
   constructor(c: Context<{ Bindings: ENV }>) {
     this.c = c;
-    this.url = new URL(c.req.url);
   }
 
   async create(params: KeyCreateParams) {
@@ -32,7 +26,7 @@ export class Key {
       );
     }
 
-    const { identifier, bytes, keyValue } = this.computeKey({
+    const { slug, bytes, keyValue } = this.computeKey({
       prefix: validatedParams.data.prefix,
     });
 
@@ -52,204 +46,140 @@ export class Key {
       ...data
     } = validatedParams.data;
 
-    const t0 = performance.now();
+    // const t0 = performance.now();
+    try {
+      const insertedKey = await this.c.env.GateDB.prepare(
+        `insert into keys (slug, hash, expires, uses, metadata) values (?, ?, ?, ?, ?)`
+      ).bind(slug, hash, data.expires ?? null, data.uses ?? null, data.metadata ?? null).run()
 
-    const response = (await this.fetchGateObject(
-      identifier,
-      this.url.origin + "/object/create",
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          hash,
-          ...data,
-        }),
+      if (data.rateLimit) {
+        const insertedRateLimit = await this.c.env.GateDB.prepare(
+          `insert into rate_limits (keyID, maxTokens, tokens, refillRate, refillInterval, lastFilled) values (?, ?, ?, ?, ?, ?)`
+        ).bind(insertedKey.meta.last_row_id, data.rateLimit.maxTokens, data.rateLimit.maxTokens, data.rateLimit.refillRate, data.rateLimit.refillInterval, Date.now()).run()
+
+        if (!insertedRateLimit.success) {
+
+          /**
+           * If there is an error inserting into rate limit table
+           * Delete the key
+           */
+          this.c.executionCtx.waitUntil(this.c.env.GateDB.prepare('delete from keys where id = ?').bind(insertedKey.meta.last_row_id).run())
+
+          return APIResponse(StatusCodes.BAD_REQUEST, null, "Could not create rate_limit entry.")
+        }
       }
-    )) as Response;
 
-    // if (data.rateLimit !== null) {
-    //   await this.fetchRateLimitObject(identifier, this.c.req.url, {
-    //     method: "POST",
-    //     headers: {
-    //       "Content-Type": "application/json",
-    //     },
-    //     body: JSON.stringify(data.rateLimit),
-    //   });
-    // }
+      if (insertedKey.success) {
+        const body: DBKeyReturnType = {
+          id: insertedKey.meta.last_row_id,
+          keyID: insertedKey.meta.last_row_id,
+          slug,
+          hash,
+          expires: data.expires ?? undefined,
+          uses: data.uses ?? undefined,
+          metadata: JSON.stringify(data.metadata) ?? undefined,
+          maxTokens: data.rateLimit?.maxTokens ?? undefined,
+          tokens: data.rateLimit?.maxTokens ?? undefined,
+          refillRate: data.rateLimit?.refillRate ?? undefined,
+          refillInterval: data.rateLimit?.refillInterval ?? undefined,
+          lastFilled: data.rateLimit ? Date.now() : undefined,
+        }
 
+        this.cache.set({ body, domain: this.c.env.WORKER_DOMAIN, slug })
+
+        return APIResponse(StatusCodes.CREATED, {
+          key,
+        });
+      } else {
+        return APIResponse(StatusCodes.BAD_REQUEST, null, "Could not insert into DB.")
+      }
+    } catch (error) {
+      console.log(error, 'error')
+      return APIResponse(StatusCodes.BAD_REQUEST, null);
+    }
+  }
+
+  async verify(params: KeyVerifyParams) {
+    const t0 = performance.now()
+    const state = dataFactory<DBKeyReturnType>()
+
+    const slug = this.getKeyID({ key: params.key })
+
+    const cachedDBResponse = await this.cache.get({ domain: this.c.env.WORKER_DOMAIN, slug })
+  
+    // Verify hot
+    if (cachedDBResponse && cachedDBResponse.ok) {
+      const json = await cachedDBResponse.json<DBKeyReturnType>()
+      state.setInitial(json)
+    } else {
+      // Verify cold
+      const result = await this.c.env.GateDB.prepare('SELECT keys.*, rate_limits.* FROM keys LEFT JOIN rate_limits ON keys.id = rate_limits.keyID WHERE keys.slug = ?').bind(slug).first<DBKeyReturnType>();
+      if (result) {
+        state.setInitial(result)
+      } else {
+        return APIResponse(StatusCodes.NOT_FOUND, null, Errors.NOT_FOUND)
+      }
+    }
+
+    if (state.object().uses !== null) {
+      if (state.object().uses as number === 0) {
+        this.c.executionCtx.waitUntil(Promise.all([
+          this.c.env.GateDB.prepare('DELETE FROM keys WHERE slug = ?').bind(slug).run(),
+          this.cache.remove({ domain: this.c.env.WORKER_DOMAIN, slug })
+        ]))
+
+        // Delete
+        return APIResponse(StatusCodes.BAD_REQUEST, null, Errors.LIMITS_EXCEEDED)
+      }
+      if (state.object().uses as number > 0) {
+        state.set('uses', state.object().uses as number - 1)
+
+        this.c.executionCtx.waitUntil(
+          this.c.env.GateDB.prepare('UPDATE keys SET uses = ? WHERE slug = ?').bind(state.object().uses, slug).run()
+        )
+      }
+    }
+    if (state.object().expires !== null) {
+      if (Date.now() > (state.object().expires as number)) {
+        this.c.executionCtx.waitUntil(Promise.all([
+          this.c.env.GateDB.prepare('DELETE FROM keys WHERE slug = ?').bind(slug).run(),
+          this.cache.remove({ domain: this.c.env.WORKER_DOMAIN, slug })
+        ]))
+        return APIResponse(StatusCodes.BAD_REQUEST, Errors.EXPIRATION_EXCEEDED)
+      }
+    }
+
+    this.c.executionCtx.waitUntil(
+      this.cache.set({ body: state.object(), domain: this.c.env.WORKER_DOMAIN, slug })
+    )
+
+    const isValid = await this.verifyHash(params.key, state.object().hash as string)
+
+    const cf = this.c.req.raw['cf']
+  
     metrics.ingest({
       dataset: "core",
       fields: {
-        event: "key-create",
+        event: "key-verify",
         latency: performance.now() - t0,
+        custom: {
+          data: {
+            cacheStatus: cachedDBResponse?.headers.get('cf-cache-status'),
+            datacenter: cachedDBResponse?.headers.get('cf-ray'),
+            origin: {
+              country: cf.country,
+              city: cf.city,
+              region: cf.region,
+            }
+          },
+        },
       },
     });
 
-    if (response.ok) {
-      const CACHE_KEY = getCacheKey(this.c.env.WORKER_DOMAIN, identifier)
-
-      this.c.executionCtx.waitUntil(caches.default.put(CACHE_KEY, response.clone()))
-
-      return APIResponse(StatusCodes.CREATED, {
-        key,
-      });
-    }
-
-    return response;
-  }
-
-  async verifyCold(
-    validatedBody: KeyVerifyParams,
-    objectId: string,
-    cachekey: string
-  ) {
-    const data = dataFactory<Storage>()
-
-    const t0 = performance.now();
-
-    const response = (await this.fetchGateObject(
-      objectId,
-      this.url.origin + "/object/verify"
-    )) as Response;
-
-    if (response.ok) {
-      // Clone before reading stream
-      await caches.default.put(cachekey, response.clone());
-
-      const json = await response.json<ResponseReturnType<Storage>>();
-
-      if (json.data !== null) {
-        data.setInitial(json.data);
-
-        if (json.data.uses !== null && json.data.uses == 0) {
-          return APIResponse(
-            StatusCodes.OK,
-            data.response<{ valid: boolean }>({ valid: false })
-          );
-        } 
-
-        const isValid = await this.verifyHash(validatedBody.key, data.get("hash") as string);
-
-        metrics.ingest({
-          dataset: "core",
-          fields: {
-            event: "key-verify-not-cached",
-            latency: performance.now() - t0,
-            custom: {
-              data: json
-            },
-          },
-        });
-
-        return APIResponse(
-          StatusCodes.OK,
-          data.response<{ valid: boolean; remaining?: number }>({
-            valid: isValid,
-            remaining: data.get("uses") as number,
-          }),
-        );
-      } else {
-        return APIResponse(StatusCodes.OK, {
-          isValid: false,
-        });
-      }
-    }
-
-    return response
-  }
-
-  async verifyHot(
-    cachedResponse: Response,
-    validatedBody: KeyVerifyParams,
-    objectId: string,
-    cacheKey: string
-  ) {
-    const data = dataFactory<Storage>()
-
-    const t0 = performance.now();
-    const json = await cachedResponse.json<ResponseReturnType<Storage>>();
-
-    if (json.data !== null) {
-      data.setInitial(json.data);
-
-      if (json.data.uses !== null) {
-        if (json.data.uses == 0) {
-          this.c.executionCtx.waitUntil(
-            Promise.all([
-              // Invalidate cache
-              caches.default.delete(cacheKey),
-              // Destroy object
-              this.fetchGateObject(
-                objectId,
-                this.url.origin + "/object/destroy"
-              ),
-            ])
-          );
-
-          return APIResponse(
-            StatusCodes.OK, data.response<{ valid: boolean }>({ valid: false })
-          )
-        }
-
-        if (json.data.uses > 0) {
-          data.set("uses", json.data.uses - 1);
-
-          // Sync object in the background
-          this.c.executionCtx.waitUntil(
-            this.fetchGateObject(objectId, this.url.origin + "/object/sync", {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-              },
-              body: JSON.stringify(data.object()),
-            })
-          );
-        }
-      }
-
-      // Create a new cached response
-      const newCacheResponse = new Response(
-        JSON.stringify({ data: data.object() }),
-        {
-          status: cachedResponse.status,
-          headers: cachedResponse.headers,
-        }
-      );
-
-      // Cache is set before handler termination
-      this.c.executionCtx.waitUntil(
-        caches.default.put(cacheKey, newCacheResponse)
-      );
-
-      metrics.ingest({
-        dataset: "core",
-        fields: {
-          event: "key-verify-cached",
-          latency: performance.now() - t0,
-        },
-      });
-
-      const isValid = await this.verifyHash(validatedBody.key, data.get('hash') as string);
-
-      return APIResponse(
-        StatusCodes.OK,
-        data.response<{ valid: boolean; remaining?: number }>({
-          valid: isValid,
-          remaining: data.get("uses") as number,
-        })
-      );
-    }
-
-    return APIResponse(
-      StatusCodes.OK, data.response<{ valid: boolean }>({ valid: false })
-    )
+    return APIResponse(StatusCodes.OK, state.response<{ isValid: boolean, remaining?: number, expires?: number }>({ isValid, remaining: state.object().uses as number, expires: state.object().expires as number }))
   }
 
   private async verifyHash(key: string, hash: Storage['hash']) {
-    const t0 = performance.now();
-
     let prefix = "";
     let value = key;
     if (key.includes("_")) {
@@ -275,14 +205,6 @@ export class Key {
     const computedHash = hashArray
       .map((byte) => byte.toString(16).padStart(2, "0"))
       .join("");
-
-    metrics.ingest({
-      dataset: "core",
-      fields: {
-        event: "key-verify-hash",
-        latency: performance.now() - t0,
-      },
-    });
 
     return computedHash === hash;
   }
@@ -312,18 +234,10 @@ export class Key {
      * note: KeyValue might or might not have a prefix
      */
     const took = this.take(keyValue);
-    const identifier = this.getIdentifier(took);
-
-    metrics.ingest({
-      dataset: "core",
-      fields: {
-        event: "key-compute",
-        latency: performance.now() - t0,
-      },
-    });
+    const slug = this.getSlug(took);
 
     return {
-      identifier,
+      slug,
       keyValue,
       bytes: computedKeyBytes,
     };
@@ -335,7 +249,7 @@ export class Key {
     return str.slice(0, half);
   }
 
-  private getIdentifier(str: string) {
+  private getSlug(str: string) {
     let id = "";
     for (let i = 0; i < str.length; i++) {
       const charCode = str.charCodeAt(i);
@@ -360,72 +274,30 @@ export class Key {
     return bytes;
   }
 
-  getObjectId(params: { key: string }) {
+  getKeyID(params: { key: string }) {
     const key = /_/.test(params.key) ? params.key.split("_")[1] : params.key;
 
     const took = this.take(key);
-    const id = this.getIdentifier(took);
+    const id = this.getSlug(took);
     return id;
-  }
-
-  private async fetchGateObject(
-    id: string,
-    input: RequestInfo<unknown, CfProperties<unknown>>,
-    init?: RequestInit<CfProperties<unknown>>
-  ) {
-    try {
-      const objectId = this.c.env.GateStorage.idFromName(id);
-      const object = this.c.env.GateStorage.get(objectId);
-      return object.fetch(input, init);
-    } catch (error) {
-      return APIResponse(
-        StatusCodes.BAD_REQUEST,
-        null,
-        "Could not fetch storage object.",
-      );
-    }
-  }
-
-  private async fetchRateLimitObject(
-    id: string,
-    input: RequestInfo<unknown, CfProperties<unknown>>,
-    init?: RequestInit<CfProperties<unknown>>
-  ) {
-    try {
-      const objectId = this.c.env.RateLimitStorage.idFromName(id);
-      const object = this.c.env.RateLimitStorage.get(objectId);
-      return object.fetch(input, init);
-    } catch (error) {
-      return APIResponse(
-        StatusCodes.BAD_REQUEST,
-        null,
-        "Could not fetch ratelimiting storage object.",
-      );
-    }
   }
 }
 
 export const keyCreateSchema = z.object({
-  // Key compute params
   prefix: z.string().optional(),
   keyBytes: z.number().optional(),
-
-  // Storage params
-  expires: z.number().nullable(),
-  uses: z.number().nullable(),
-  metadata: z.object({}).nullable(),
-  rateLimit: z
-    .object({
-      /**
-       * Allowed requests per timeframe
-       *
-       * ex: 3 requests per 10 seconds
-       */
-      requests: z.number(),
-      timeframe: z.number(),
-    })
-    .nullable(),
-});
+  rateLimit: dbKeyReturnSchema.pick({ maxTokens: true, refillInterval: true, refillRate: true }).optional()
+}).merge(dbKeyReturnSchema.omit({
+  id: true,
+  keyID: true,
+  slug: true,
+  hash: true,
+  maxTokens: true,
+  refillInterval: true,
+  refillRate: true,
+  lastFilled: true,
+  tokens: true
+}));
 
 export type KeyCreateParams = z.infer<typeof keyCreateSchema>;
 
