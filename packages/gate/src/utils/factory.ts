@@ -5,7 +5,16 @@ export const dataFactory = <T extends Record<string, unknown>>() => {
     setInitial: (json: T) => {
       data = new Map<keyof T, T[keyof T]>(entries(json));
     },
-    object: () => Object.fromEntries(data),
+    object: () => {
+      return {
+        ...Object.fromEntries(data) as Record<keyof T, T[keyof T]>,
+        pick: (picked: keyof T) => data.get(picked),
+        omit: (keys: Array<keyof T>) => {
+          const entries = Array.from(data).filter(([key]) => !keys.includes(key as keyof T));
+          return Object.fromEntries(entries);
+        }
+      };
+    },
     set: (k: keyof T, v: T[keyof T]) => data.set(k, v),
     get: (k: keyof T) => data.get(k),
     response: <T extends Record<string, unknown>>(input: T) => {
