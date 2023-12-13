@@ -7,9 +7,16 @@ export enum StatusCodes {
   "TOO_MANY_REQUESTS" = 429,
 }
 
+export enum Errors {
+  "LIMITS_EXCEEDED" = "Usage limits exceeded.",
+  "EXPIRATION_EXCEEDED" = "Expired.",
+  "RATE_LIMITTED" = "Rate limited, please try again later.",
+  "NOT_FOUND" = 'Resource not found.'
+}
+
 export type ResponseReturnType<T> = {
   data: T | null;
-  error: string | null;
+  error: string | Errors | null ;
 };
 
 export const APIResponse = <T>(
