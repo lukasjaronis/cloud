@@ -4,13 +4,12 @@ export const dbTablesSchema = z.enum(['keys', 'rate_limit'])
 export type DBTablesSchema = z.infer<typeof dbTablesSchema>
 
 export const dbKeyReturnSchema = z.object({
-  id: z.number(),
+  id: z.string(),
   slug: z.string(),
   hash: z.string(),
   expires: z.number().optional(),
   uses: z.number().optional(),
   metadata: z.string().optional(),
-  keyID: z.number(),
   maxTokens: z.number().optional(),
   tokens: z.number().optional(),
   refillRate: z.number().optional(),
@@ -19,4 +18,3 @@ export const dbKeyReturnSchema = z.object({
 })
 
 export type DBKeyReturnType = z.infer<typeof dbKeyReturnSchema>
-export type CachedDBKeyReturnType = Omit<DBKeyReturnType, 'id' | 'keyID'>

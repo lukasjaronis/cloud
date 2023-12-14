@@ -7,7 +7,10 @@ export const envSchema = z.object({
   AXIOM_TOKEN: z.string(),
   AXIOM_ORG_ID: z.string(),
   AUTHENTICATION_TOKEN: z.string(),
-  GateDB: z.custom<D1Database>()
+  GateDB: z.custom<D1Database>(),
+  PLANETSCALE_HOST: z.string(),
+  PLANETSCALE_USERNAME: z.string(),
+  PLANETSCALE_PASSWORD: z.string()
 })
 
 export type ENV = z.infer<typeof envSchema>

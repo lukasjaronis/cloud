@@ -1,0 +1,27 @@
+{
+  "version": "5",
+  "dialect": "mysql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "5",
+      "when": 1702499304728,
+      "tag": "0000_third_echo",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "5",
+      "when": 1702500595328,
+      "tag": "0001_sparkling_genesis",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "5",
+      "when": 1702500625413,
+      "tag": "0002_aromatic_layla_miller",
+      "breakpoints": true
+    }
+  ]
+}

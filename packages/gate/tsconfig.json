@@ -14,5 +14,5 @@
       "@types/node"
     ],
   },
-  "include": ["src/**/*", "src/env.ts"]
+  "include": ["src/**/*", "src/config/env.ts", "drizzle.config.ts"]
 }

@@ -1,6 +1,6 @@
 import { Axiom } from "@axiomhq/js";
 import { z } from "zod";
-import { ENV } from "../../env";
+import { ENV } from "../env";
 
 const metricSchema = z.object({
   dataset: z.enum(["core"]),

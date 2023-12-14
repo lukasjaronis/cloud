@@ -5,18 +5,21 @@
   "scripts": {
     "dev": "wrangler dev src/index.ts",
     "publish": "wrangler deploy src/index.ts",
-    "db:migrate": "wrangler d1 execute GateDB --file src/db/schema.sql --local",
-    "db:migrate:prod": "wrangler d1 execute GateDB --file src/db/schema.sql",
-    "db:show": "wrangler d1 execute GateDB --command \"SELECT name FROM sqlite_schema WHERE type ='table'\" --local",
-    "db:show:keys": "wrangler d1 execute GateDB --command \"SELECT * FROM keys\" --local",
-    "db:show:rl": "wrangler d1 execute GateDB --command \"SELECT * FROM rate_limits\" --local"
+    "db:migrate": "wrangler d1 execute GateDB --file src/config/db/schema.sql --local",
+    "db:migrate:prod": "wrangler d1 execute GateDB --file src/config/db/schema.sql",
+    "ps:gen": "drizzle-kit generate:mysql",
+    "ps:push": "dotenv -e .env drizzle-kit push:mysql"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "4.20231121.0",
+    "dotenv-cli": "^7.3.0",
+    "drizzle-kit": "^0.20.6",
     "wrangler": "3.17.1"
   },
   "dependencies": {
     "@axiomhq/js": "1.0.0-rc.1",
+    "@planetscale/database": "^1.11.0",
+    "drizzle-orm": "^0.29.1",
     "hono": "^3.10.3",
     "zod": "^3.22.4"
   }

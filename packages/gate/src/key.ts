@@ -3,14 +3,14 @@ import { Context } from "hono";
 import { z } from "zod";
 import { APIResponse, Errors, StatusCodes } from "./utils/response";
 import { dataFactory } from "./utils/factory";
-import { Cache } from "./utils/cache";
-import { ENV } from "./env";
-import { metrics } from ".";
-import { DBKeyReturnType, dbKeyReturnSchema } from "./db/types";
+import { ENV } from "./config/env";
+import { metrics, cache, db } from ".";
+import { DBKeyReturnType, dbKeyReturnSchema } from "./config/db/types";
+import { keys } from "./config/db/schema";
+import { eq } from 'drizzle-orm'
 
 export class Key {
   private c: Context<{ Bindings: ENV }>;
-  private cache = new Cache()
 
   constructor(c: Context<{ Bindings: ENV }>) {
     this.c = c;
@@ -46,33 +46,16 @@ export class Key {
       ...data
     } = validatedParams.data;
 
-    // const t0 = performance.now();
+    const t0 = performance.now();
     try {
+      const id = this.computeKey({}).keyValue
       const insertedKey = await this.c.env.GateDB.prepare(
-        `insert into keys (slug, hash, expires, uses, metadata) values (?, ?, ?, ?, ?)`
-      ).bind(slug, hash, data.expires ?? null, data.uses ?? null, data.metadata ?? null).run()
-
-      if (data.rateLimit) {
-        const insertedRateLimit = await this.c.env.GateDB.prepare(
-          `insert into rate_limits (keyID, maxTokens, tokens, refillRate, refillInterval, lastFilled) values (?, ?, ?, ?, ?, ?)`
-        ).bind(insertedKey.meta.last_row_id, data.rateLimit.maxTokens, data.rateLimit.maxTokens, data.rateLimit.refillRate, data.rateLimit.refillInterval, Date.now()).run()
-
-        if (!insertedRateLimit.success) {
-
-          /**
-           * If there is an error inserting into rate limit table
-           * Delete the key
-           */
-          this.c.executionCtx.waitUntil(this.c.env.GateDB.prepare('delete from keys where id = ?').bind(insertedKey.meta.last_row_id).run())
-
-          return APIResponse(StatusCodes.BAD_REQUEST, null, "Could not create rate_limit entry.")
-        }
-      }
+        `insert into keys (id, slug, hash, expires, uses, metadata, maxTokens, tokens, refillRate, refillInterval) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ).bind(id, slug, hash, data.expires ?? null, data.uses ?? null, data.metadata ?? null, data.rateLimit?.maxTokens ?? null, data.rateLimit?.maxTokens ?? null, data.rateLimit?.refillRate ?? null, data.rateLimit?.refillInterval ?? null).run()
 
       if (insertedKey.success) {
         const body: DBKeyReturnType = {
-          id: insertedKey.meta.last_row_id,
-          keyID: insertedKey.meta.last_row_id,
+          id,
           slug,
           hash,
           expires: data.expires ?? undefined,
@@ -82,10 +65,90 @@ export class Key {
           tokens: data.rateLimit?.maxTokens ?? undefined,
           refillRate: data.rateLimit?.refillRate ?? undefined,
           refillInterval: data.rateLimit?.refillInterval ?? undefined,
-          lastFilled: data.rateLimit ? Date.now() : undefined,
+          // lastFilled: data.rateLimit ? Date.now() : undefined,
         }
 
-        this.cache.set({ body, domain: this.c.env.WORKER_DOMAIN, slug })
+        cache.set({ input: body, domain: this.c.env.WORKER_DOMAIN, slug })
+
+        metrics.ingest({
+          dataset: "core",
+          fields: {
+            event: "key-create-d1",
+            latency: performance.now() - t0,
+          },
+        });
+
+        return APIResponse(StatusCodes.CREATED, {
+          key,
+        });
+      } else {
+        return APIResponse(StatusCodes.BAD_REQUEST, null, "Could not insert into DB.")
+      }
+    } catch (error) {
+      console.log(error, 'error')
+      return APIResponse(StatusCodes.BAD_REQUEST, null);
+    }
+  }
+
+  async createPS(params: KeyCreateParams) {
+    const validatedParams = keyCreateSchema.safeParse(params);
+
+    if (!validatedParams.success) {
+      return APIResponse(
+        StatusCodes.BAD_REQUEST,
+        validatedParams.error.issues,
+      );
+    }
+
+    const { slug, bytes, keyValue } = this.computeKey({
+      prefix: validatedParams.data.prefix,
+    });
+
+    const hashBuffer = await crypto.subtle.digest("SHA-256", bytes);
+    const hashArray = Array.from(new Uint8Array(hashBuffer));
+    const hash = hashArray
+      .map((byte) => byte.toString(16).padStart(2, "0"))
+      .join("");
+
+    const key = validatedParams.data.prefix
+      ? `${validatedParams.data.prefix}_${keyValue}`
+      : keyValue;
+
+    const {
+      prefix: _unused_prefix,
+      keyBytes: _unused_keybytes,
+      ...data
+    } = validatedParams.data;
+
+    const t0 = performance.now();
+    try {
+      const id = this.computeKey({}).keyValue
+      const insertedKey = await db.db.insert(keys).values({ id, slug, hash, expires: data.expires, uses: data.uses, metadata: data.metadata, maxTokens: data.rateLimit?.maxTokens, tokens: data.rateLimit?.maxTokens, refillInterval: data.rateLimit?.refillInterval, refillRate: data.rateLimit?.refillRate })
+
+      if (insertedKey.rowsAffected === 1) {
+        const body: DBKeyReturnType = {
+          id,
+          slug,
+          hash,
+          expires: data.expires ?? undefined,
+          uses: data.uses ?? undefined,
+          metadata: JSON.stringify(data.metadata) ?? undefined,
+          maxTokens: data.rateLimit?.maxTokens ?? undefined,
+          tokens: data.rateLimit?.maxTokens ?? undefined,
+          refillRate: data.rateLimit?.refillRate ?? undefined,
+          refillInterval: data.rateLimit?.refillInterval ?? undefined,
+          // lastFilled: data.rateLimit ? Date.now() : undefined,
+        }
+
+        cache.set({ input: body, domain: this.c.env.WORKER_DOMAIN, slug })
+
+        metrics.ingest({
+          dataset: "core",
+          fields: {
+            event: "key-create-ps",
+            latency: performance.now() - t0,
+          },
+        });
 
         return APIResponse(StatusCodes.CREATED, {
           key,
@@ -105,15 +168,18 @@ export class Key {
 
     const slug = this.getKeyID({ key: params.key })
 
-    const cachedDBResponse = await this.cache.get({ domain: this.c.env.WORKER_DOMAIN, slug })
-  
-    // Verify hot
-    if (cachedDBResponse && cachedDBResponse.ok) {
-      const json = await cachedDBResponse.json<DBKeyReturnType>()
+    const cachedResponse = await cache.get({ domain: this.c.env.WORKER_DOMAIN, slug })
+    const isResponse = typeof cachedResponse !== 'string'
+
+    if (cachedResponse && isResponse && cachedResponse.ok) {
+      const json = await cachedResponse.json<DBKeyReturnType>()
+      state.setInitial(json)
+    } else if (cachedResponse && !isResponse) {
+      const json = JSON.parse(cachedResponse) as DBKeyReturnType
       state.setInitial(json)
     } else {
       // Verify cold
-      const result = await this.c.env.GateDB.prepare('SELECT keys.*, rate_limits.* FROM keys LEFT JOIN rate_limits ON keys.id = rate_limits.keyID WHERE keys.slug = ?').bind(slug).first<DBKeyReturnType>();
+      const result = await this.c.env.GateDB.prepare('SELECT * FROM keys WHERE slug = ?').bind(slug).first<DBKeyReturnType>();
       if (result) {
         state.setInitial(result)
       } else {
@@ -125,7 +191,7 @@ export class Key {
       if (state.object().uses as number === 0) {
         this.c.executionCtx.waitUntil(Promise.all([
           this.c.env.GateDB.prepare('DELETE FROM keys WHERE slug = ?').bind(slug).run(),
-          this.cache.remove({ domain: this.c.env.WORKER_DOMAIN, slug })
+          cache.remove({ domain: this.c.env.WORKER_DOMAIN, slug })
         ]))
 
         // Delete
@@ -143,36 +209,94 @@ export class Key {
       if (Date.now() > (state.object().expires as number)) {
         this.c.executionCtx.waitUntil(Promise.all([
           this.c.env.GateDB.prepare('DELETE FROM keys WHERE slug = ?').bind(slug).run(),
-          this.cache.remove({ domain: this.c.env.WORKER_DOMAIN, slug })
+          cache.remove({ domain: this.c.env.WORKER_DOMAIN, slug })
         ]))
         return APIResponse(StatusCodes.BAD_REQUEST, Errors.EXPIRATION_EXCEEDED)
       }
     }
 
     this.c.executionCtx.waitUntil(
-      this.cache.set({ body: state.object(), domain: this.c.env.WORKER_DOMAIN, slug })
+      cache.set({ input: state.object() as DBKeyReturnType, domain: this.c.env.WORKER_DOMAIN, slug })
     )
 
     const isValid = await this.verifyHash(params.key, state.object().hash as string)
 
-    const cf = this.c.req.raw['cf']
-  
     metrics.ingest({
       dataset: "core",
       fields: {
-        event: "key-verify",
+        event: "key-verify-d1",
         latency: performance.now() - t0,
-        custom: {
-          data: {
-            cacheStatus: cachedDBResponse?.headers.get('cf-cache-status'),
-            datacenter: cachedDBResponse?.headers.get('cf-ray'),
-            origin: {
-              country: cf.country,
-              city: cf.city,
-              region: cf.region,
-            }
-          },
-        },
+      },
+    });
+
+    return APIResponse(StatusCodes.OK, state.response<{ isValid: boolean, remaining?: number, expires?: number }>({ isValid, remaining: state.object().uses as number, expires: state.object().expires as number }))
+  }
+
+  async verifyPS(params: KeyVerifyParams) {
+    const t0 = performance.now()
+    const state = dataFactory<DBKeyReturnType>()
+
+    const slug = this.getKeyID({ key: params.key })
+
+    const cachedResponse = await cache.get({ domain: this.c.env.WORKER_DOMAIN, slug })
+    const isResponse = typeof cachedResponse !== 'string'
+
+    if (cachedResponse && isResponse && cachedResponse.ok) {
+      const json = await cachedResponse.json<DBKeyReturnType>()
+      state.setInitial(json)
+    } else if (cachedResponse && !isResponse) {
+      const json = JSON.parse(cachedResponse) as DBKeyReturnType
+      state.setInitial(json)
+    } else {
+      // Verify cold
+      const result = await db.db.query.keys.findFirst({ where: (table) => eq(table.slug, slug) })
+
+      if (result) {
+        state.setInitial(result as DBKeyReturnType)
+      } else {
+        return APIResponse(StatusCodes.NOT_FOUND, null, Errors.NOT_FOUND)
+      }
+    }
+
+    if (state.object().uses !== null) {
+      if (state.object().uses as number === 0) {
+        this.c.executionCtx.waitUntil(Promise.all([
+          db.db.delete(keys).where(eq(keys.slug, slug)),
+          cache.remove({ domain: this.c.env.WORKER_DOMAIN, slug })
+        ]))
+
+        // Delete
+        return APIResponse(StatusCodes.BAD_REQUEST, null, Errors.LIMITS_EXCEEDED)
+      }
+      if (state.object().uses as number > 0) {
+        state.set('uses', state.object().uses as number - 1)
+
+        this.c.executionCtx.waitUntil(
+          db.db.update(keys).set({ uses: state.object().uses as number }).where(eq(keys.slug, slug)),
+        )
+      }
+    }
+    if (state.object().expires !== null) {
+      if (Date.now() > (state.object().expires as number)) {
+        this.c.executionCtx.waitUntil(Promise.all([
+          db.db.delete(keys).where(eq(keys.slug, slug)),
+          cache.remove({ domain: this.c.env.WORKER_DOMAIN, slug })
+        ]))
+        return APIResponse(StatusCodes.BAD_REQUEST, Errors.EXPIRATION_EXCEEDED)
+      }
+    }
+
+    this.c.executionCtx.waitUntil(
+      cache.set({ input: state.object() as DBKeyReturnType, domain: this.c.env.WORKER_DOMAIN, slug })
+    )
+
+    const isValid = await this.verifyHash(params.key, state.object().hash as string)
+
+    metrics.ingest({
+      dataset: "core",
+      fields: {
+        event: "key-verify-ps",
+        latency: performance.now() - t0,
       },
     });
 

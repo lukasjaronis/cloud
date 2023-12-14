@@ -1,51 +1,59 @@
 import { z } from 'zod'
 
 export class Cache {
-  constructor() { }
+  memoryCache = new Map() as Map<string | Request, string | Response>
+  constructor() {}
 
-  getKey(params: CacheCreateKey) {
-    return new URL(`${params.domain}/cache/${params.version}/${params.slug}`)
+  getKey({ domain, version = 'v0', slug }: CacheCreateKey) {
+    return new URL(`https://${domain}/cache/${version}/${slug}`)
   }
 
+  /**
+   * Sets in-memory cache
+   * Sets local cache (colo cache)
+   */
   public async set(params: CacheSet) {
-    const request = new Request(this.getKey(params))
-    const response = new Response(JSON.stringify(params.body), {
+    const key = this.getKey(params).toString()
+    const response = jsonResponse(params.input, {
       headers: {
-        "Content-Type": "application/json",
-        "Cache-Control": `public, max-age=${5 * 60}`
+        "Cache-Control": `max-age=${5 * 60}`
       }
     })
-
-    await caches.default.put(request, response)
+    
+    this.memoryCache.set(key, JSON.stringify(params.input))
+    await caches.default.put(key, response)
   }
 
+  /**
+   * Remove from in-memory
+   * Remove from local cache (colo cache)
+   */
   public async remove(params: CacheDeleteKey) {
-    await Promise.all([
-      caches.default.delete(this.getKey(params).toString())
-    ])
-  }
+    const key = this.getKey(params).toString()
 
+    this.memoryCache.delete(key)
+    await caches.default.delete(key)
+  } 
+  /**
+   * Check in-memory cache
+   * Check local cache (colo cache)
+   */
   public async get(params: CacheGet) {
-    const response = await caches.default.match(new Request(this.getKey(params)))
-    if (!response || !response.ok) {
-      // Cache miss
-      return null
-    }
+    const key = this.getKey(params).toString()
 
-    return response
+    return this.memoryCache.get(key) || await caches.default.match(key)
   }
 }
 
 export const cacheCreateKeySchema = z.object({
+  slug: z.string(),
   version: z.string().default('v0').optional(),
   domain: z.string(),
-  slug: z.string()
+  input: z.any()
 })
 export type CacheCreateKey = z.infer<typeof cacheCreateKeySchema>
 
-export const cacheSetSchema = z.object({
-  body: z.record(z.any())
-}).merge(cacheCreateKeySchema)
+export const cacheSetSchema = cacheCreateKeySchema
 export type CacheSet = z.infer<typeof cacheSetSchema>
 
 export const cacheDeleteKeySchema = cacheCreateKeySchema
@@ -53,3 +61,16 @@ export type CacheDeleteKey = z.infer<typeof cacheDeleteKeySchema>
 
 export const cacheGet = cacheCreateKeySchema
 export type CacheGet = z.infer<typeof cacheGet>
+
+function jsonResponse(data: unknown, init?: ResponseInit) {
+  return new Response(JSON.stringify(data), {
+    ...init,
+    headers: {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET,HEAD,POST,OPTIONS',
+      'Access-Control-Max-Age': '86400',
+      'Content-Type': 'application/json',
+      ...init?.headers,
+    },
+  })
+}
