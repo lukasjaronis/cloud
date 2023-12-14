@@ -7,7 +7,7 @@ keep_vars = true
 [[d1_databases]]
 binding = "GateDB"
 database_name = "GateDB"
-database_id = "32501311-82fe-4172-82a4-9e37712201aa"
+database_id = "c4124c8c-58fd-4876-8a38-a476ec3a31a8"
 
 [env.dev]
 vars = { ENVIRONMENT = "development" }

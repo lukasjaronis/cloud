@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { D1Database } from "@cloudflare/workers-types";
+import { D1Database, Hyperdrive } from "@cloudflare/workers-types";
 
 export const envSchema = z.object({
   ENVIRONMENT: z.enum(['development', 'production']).default('development'),

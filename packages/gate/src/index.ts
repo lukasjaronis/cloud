@@ -6,6 +6,7 @@ import {
   Key,
   KeyCreateParams,
   KeyVerifyParams,
+  keyCreateSchema,
   keyVerifySchema,
 } from "./key";
 import { APIResponse, StatusCodes } from "./utils/response";
@@ -13,9 +14,10 @@ import { Metrics } from "./config/metrics/axiom";
 import { ENV, envSchema } from "./config/env";
 import { NOOP } from "./utils/noop";
 import { CfProperties } from "@cloudflare/workers-types";
-import { Cache } from "./utils/cache";
+import { Cache } from "./config/cache/cache";
 import { Database } from "./config/db/db";
-
+import { PlanetScaleDatabase } from 'drizzle-orm/planetscale-serverless'
+import { schema } from "./config/db";
 /**
  * Not sure why .default is not typed with the latest versions.
  *
@@ -36,9 +38,8 @@ declare global {
 }
 
 export let cache = new Cache
-export let db: Database = new NOOP() as Database
+export let db: PlanetScaleDatabase<typeof schema> = new NOOP() as PlanetScaleDatabase<typeof schema>
 export let metrics: Metrics = new NOOP() as Metrics
-
 const app = new Hono<{ Bindings: ENV }>();
 
 app.use("*", async (c, next) => {
@@ -64,14 +65,34 @@ app.use("*", async (c, next) => {
 
 app.post("/api/keys/create", async (c) => {
   const body = await c.req.json<KeyCreateParams>();
+
+  const validatedBody = keyCreateSchema.safeParse(body)
+
+  if (!validatedBody.success) {
+    return APIResponse(
+      StatusCodes.BAD_REQUEST,
+      validatedBody.error.issues,
+    );
+  }
+
   const instance = new Key(c);
-  return await instance.create(body);
+  return await instance.create(validatedBody.data);
 });
 
 app.post("/api/keys/create/ps", async (c) => {
   const body = await c.req.json<KeyCreateParams>();
+
+  const validatedBody = keyCreateSchema.safeParse(body)
+
+  if (!validatedBody.success) {
+    return APIResponse(
+      StatusCodes.BAD_REQUEST,
+      validatedBody.error.issues,
+    );
+  }
+
   const instance = new Key(c);
-  return await instance.createPS(body);
+  return await instance.createPS(validatedBody.data)
 });
 
 app.post("/api/keys/verify", async (c) => {
@@ -119,7 +140,7 @@ export default {
     }
 
     if (!(db instanceof Database)) {
-      db = new Database(validatedEnv.data)
+      db = new Database(validatedEnv.data).db
     }
 
     return app.fetch(request, validatedEnv.data, ctx)

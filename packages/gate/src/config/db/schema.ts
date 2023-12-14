@@ -1,8 +1,4 @@
 import {
-  bigint,
-  datetime,
-  timestamp,
-  index,
   int,
   mysqlTable,
   text,

@@ -14,13 +14,13 @@ export class Cache {
    */
   public async set(params: CacheSet) {
     const key = this.getKey(params).toString()
-    const response = jsonResponse(params.input, {
+    const response = jsonResponse(params.value, {
       headers: {
         "Cache-Control": `max-age=${5 * 60}`
       }
     })
     
-    this.memoryCache.set(key, JSON.stringify(params.input))
+    this.memoryCache.set(key, JSON.stringify(params.value))
     await caches.default.put(key, response)
   }
 
@@ -46,10 +46,10 @@ export class Cache {
 }
 
 export const cacheCreateKeySchema = z.object({
-  slug: z.string(),
   version: z.string().default('v0').optional(),
   domain: z.string(),
-  input: z.any()
+  value: z.any(),
+  slug: z.string()
 })
 export type CacheCreateKey = z.infer<typeof cacheCreateKeySchema>
 

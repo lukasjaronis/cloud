@@ -8,7 +8,7 @@ import { metrics, cache, db } from ".";
 import { DBKeyReturnType, dbKeyReturnSchema } from "./config/db/types";
 import { keys } from "./config/db/schema";
 import { eq } from 'drizzle-orm'
-
+import base_x from 'base-x'
 export class Key {
   private c: Context<{ Bindings: ENV }>;
 
@@ -17,58 +17,34 @@ export class Key {
   }
 
   async create(params: KeyCreateParams) {
-    const validatedParams = keyCreateSchema.safeParse(params);
-
-    if (!validatedParams.success) {
-      return APIResponse(
-        StatusCodes.BAD_REQUEST,
-        validatedParams.error.issues,
-      );
-    }
-
-    const { slug, bytes, keyValue } = this.computeKey({
-      prefix: validatedParams.data.prefix,
-    });
-
-    const hashBuffer = await crypto.subtle.digest("SHA-256", bytes);
-    const hashArray = Array.from(new Uint8Array(hashBuffer));
-    const hash = hashArray
-      .map((byte) => byte.toString(16).padStart(2, "0"))
-      .join("");
-
-    const key = validatedParams.data.prefix
-      ? `${validatedParams.data.prefix}_${keyValue}`
-      : keyValue;
-
-    const {
-      prefix: _unused_prefix,
-      keyBytes: _unused_keybytes,
-      ...data
-    } = validatedParams.data;
+    const keyID = await this.computeId(params.prefix)
+    const keyHash = await this.computeHash(keyID)
 
     const t0 = performance.now();
     try {
-      const id = this.computeKey({}).keyValue
+      const id = await this.computeId()
+      const slug = this.computeIdSlug(keyID)
+
       const insertedKey = await this.c.env.GateDB.prepare(
         `insert into keys (id, slug, hash, expires, uses, metadata, maxTokens, tokens, refillRate, refillInterval) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-      ).bind(id, slug, hash, data.expires ?? null, data.uses ?? null, data.metadata ?? null, data.rateLimit?.maxTokens ?? null, data.rateLimit?.maxTokens ?? null, data.rateLimit?.refillRate ?? null, data.rateLimit?.refillInterval ?? null).run()
+      ).bind(id, slug, keyHash, params.expires ?? null, params.uses ?? null, params.metadata ?? null, params.rateLimit?.maxTokens ?? null, params.rateLimit?.maxTokens ?? null, params.rateLimit?.refillRate ?? null, params.rateLimit?.refillInterval ?? null).run()
 
       if (insertedKey.success) {
-        const body: DBKeyReturnType = {
+        const value: DBKeyReturnType = {
           id,
+          hash: keyHash,
           slug,
-          hash,
-          expires: data.expires ?? undefined,
-          uses: data.uses ?? undefined,
-          metadata: JSON.stringify(data.metadata) ?? undefined,
-          maxTokens: data.rateLimit?.maxTokens ?? undefined,
-          tokens: data.rateLimit?.maxTokens ?? undefined,
-          refillRate: data.rateLimit?.refillRate ?? undefined,
-          refillInterval: data.rateLimit?.refillInterval ?? undefined,
+          expires: params.expires ?? undefined,
+          uses: params.uses ?? undefined,
+          metadata: JSON.stringify(params.metadata) ?? undefined,
+          maxTokens: params.rateLimit?.maxTokens ?? undefined,
+          tokens: params.rateLimit?.maxTokens ?? undefined,
+          refillRate: params.rateLimit?.refillRate ?? undefined,
+          refillInterval: params.rateLimit?.refillInterval ?? undefined,
           // lastFilled: data.rateLimit ? Date.now() : undefined,
         }
 
-        cache.set({ input: body, domain: this.c.env.WORKER_DOMAIN, slug })
+        cache.set({ domain:this.c.env.WORKER_DOMAIN, slug, value })
 
         metrics.ingest({
           dataset: "core",
@@ -79,7 +55,7 @@ export class Key {
         });
 
         return APIResponse(StatusCodes.CREATED, {
-          key,
+          key: keyID,
         });
       } else {
         return APIResponse(StatusCodes.BAD_REQUEST, null, "Could not insert into DB.")
@@ -91,56 +67,31 @@ export class Key {
   }
 
   async createPS(params: KeyCreateParams) {
-    const validatedParams = keyCreateSchema.safeParse(params);
-
-    if (!validatedParams.success) {
-      return APIResponse(
-        StatusCodes.BAD_REQUEST,
-        validatedParams.error.issues,
-      );
-    }
-
-    const { slug, bytes, keyValue } = this.computeKey({
-      prefix: validatedParams.data.prefix,
-    });
-
-    const hashBuffer = await crypto.subtle.digest("SHA-256", bytes);
-    const hashArray = Array.from(new Uint8Array(hashBuffer));
-    const hash = hashArray
-      .map((byte) => byte.toString(16).padStart(2, "0"))
-      .join("");
-
-    const key = validatedParams.data.prefix
-      ? `${validatedParams.data.prefix}_${keyValue}`
-      : keyValue;
-
-    const {
-      prefix: _unused_prefix,
-      keyBytes: _unused_keybytes,
-      ...data
-    } = validatedParams.data;
+    const keyID = await this.computeId(params.prefix)
+    const keyHash = await this.computeHash(keyID)
 
     const t0 = performance.now();
     try {
-      const id = this.computeKey({}).keyValue
-      const insertedKey = await db.db.insert(keys).values({ id, slug, hash, expires: data.expires, uses: data.uses, metadata: data.metadata, maxTokens: data.rateLimit?.maxTokens, tokens: data.rateLimit?.maxTokens, refillInterval: data.rateLimit?.refillInterval, refillRate: data.rateLimit?.refillRate })
-
+      const id = await this.computeId()
+      const slug = this.computeIdSlug(keyID)
+      const insertedKey = await db.insert(keys).values({ id, slug, hash: keyHash, expires: params.expires, uses: params.uses, metadata: params.metadata, maxTokens: params.rateLimit?.maxTokens, tokens: params.rateLimit?.maxTokens, refillInterval: params.rateLimit?.refillInterval, refillRate: params.rateLimit?.refillRate })
+    
       if (insertedKey.rowsAffected === 1) {
-        const body: DBKeyReturnType = {
+        const value: DBKeyReturnType = {
           id,
+          hash: keyHash,
           slug,
-          hash,
-          expires: data.expires ?? undefined,
-          uses: data.uses ?? undefined,
-          metadata: JSON.stringify(data.metadata) ?? undefined,
-          maxTokens: data.rateLimit?.maxTokens ?? undefined,
-          tokens: data.rateLimit?.maxTokens ?? undefined,
-          refillRate: data.rateLimit?.refillRate ?? undefined,
-          refillInterval: data.rateLimit?.refillInterval ?? undefined,
+          expires: params.expires ?? undefined,
+          uses: params.uses ?? undefined,
+          metadata: JSON.stringify(params.metadata) ?? undefined,
+          maxTokens: params.rateLimit?.maxTokens ?? undefined,
+          tokens: params.rateLimit?.maxTokens ?? undefined,
+          refillRate: params.rateLimit?.refillRate ?? undefined,
+          refillInterval: params.rateLimit?.refillInterval ?? undefined,
           // lastFilled: data.rateLimit ? Date.now() : undefined,
         }
 
-        cache.set({ input: body, domain: this.c.env.WORKER_DOMAIN, slug })
+        cache.set({ domain:this.c.env.WORKER_DOMAIN, slug, value })
 
         metrics.ingest({
           dataset: "core",
@@ -151,7 +102,7 @@ export class Key {
         });
 
         return APIResponse(StatusCodes.CREATED, {
-          key,
+          key: keyID,
         });
       } else {
         return APIResponse(StatusCodes.BAD_REQUEST, null, "Could not insert into DB.")
@@ -165,12 +116,10 @@ export class Key {
   async verify(params: KeyVerifyParams) {
     const t0 = performance.now()
     const state = dataFactory<DBKeyReturnType>()
-
-    const slug = this.getKeyID({ key: params.key })
+    const slug = this.computeIdSlug(params.key)
 
     const cachedResponse = await cache.get({ domain: this.c.env.WORKER_DOMAIN, slug })
     const isResponse = typeof cachedResponse !== 'string'
-
     if (cachedResponse && isResponse && cachedResponse.ok) {
       const json = await cachedResponse.json<DBKeyReturnType>()
       state.setInitial(json)
@@ -216,7 +165,7 @@ export class Key {
     }
 
     this.c.executionCtx.waitUntil(
-      cache.set({ input: state.object() as DBKeyReturnType, domain: this.c.env.WORKER_DOMAIN, slug })
+      cache.set({ value: state.object(), domain: this.c.env.WORKER_DOMAIN, slug })
     )
 
     const isValid = await this.verifyHash(params.key, state.object().hash as string)
@@ -235,10 +184,9 @@ export class Key {
   async verifyPS(params: KeyVerifyParams) {
     const t0 = performance.now()
     const state = dataFactory<DBKeyReturnType>()
+    const slug = this.computeIdSlug(params.key)
 
-    const slug = this.getKeyID({ key: params.key })
-
-    const cachedResponse = await cache.get({ domain: this.c.env.WORKER_DOMAIN, slug })
+    const cachedResponse = await cache.get({ domain:this.c.env.WORKER_DOMAIN, slug })
     const isResponse = typeof cachedResponse !== 'string'
 
     if (cachedResponse && isResponse && cachedResponse.ok) {
@@ -249,7 +197,7 @@ export class Key {
       state.setInitial(json)
     } else {
       // Verify cold
-      const result = await db.db.query.keys.findFirst({ where: (table) => eq(table.slug, slug) })
+      const result = await db.query.keys.findFirst({ where: (table) => eq(table.slug, slug) })
 
       if (result) {
         state.setInitial(result as DBKeyReturnType)
@@ -261,8 +209,8 @@ export class Key {
     if (state.object().uses !== null) {
       if (state.object().uses as number === 0) {
         this.c.executionCtx.waitUntil(Promise.all([
-          db.db.delete(keys).where(eq(keys.slug, slug)),
-          cache.remove({ domain: this.c.env.WORKER_DOMAIN, slug })
+          db.delete(keys).where(eq(keys.slug, slug)),
+          cache.remove({ domain:this.c.env.WORKER_DOMAIN, slug })
         ]))
 
         // Delete
@@ -272,25 +220,25 @@ export class Key {
         state.set('uses', state.object().uses as number - 1)
 
         this.c.executionCtx.waitUntil(
-          db.db.update(keys).set({ uses: state.object().uses as number }).where(eq(keys.slug, slug)),
+          db.update(keys).set({ uses: state.object().uses as number }).where(eq(keys.slug, slug)),
         )
       }
     }
     if (state.object().expires !== null) {
       if (Date.now() > (state.object().expires as number)) {
         this.c.executionCtx.waitUntil(Promise.all([
-          db.db.delete(keys).where(eq(keys.slug, slug)),
-          cache.remove({ domain: this.c.env.WORKER_DOMAIN, slug })
+          db.delete(keys).where(eq(keys.slug, slug)),
+          cache.remove({ domain:this.c.env.WORKER_DOMAIN, slug })
         ]))
         return APIResponse(StatusCodes.BAD_REQUEST, Errors.EXPIRATION_EXCEEDED)
       }
     }
 
     this.c.executionCtx.waitUntil(
-      cache.set({ input: state.object() as DBKeyReturnType, domain: this.c.env.WORKER_DOMAIN, slug })
+      cache.set({ domain:this.c.env.WORKER_DOMAIN, slug, value:state.object() })
     )
 
-    const isValid = await this.verifyHash(params.key, state.object().hash as string)
+    const isValid = await this.verifyHash(params.key, state.object().hash)
 
     metrics.ingest({
       dataset: "core",
@@ -304,76 +252,50 @@ export class Key {
   }
 
   private async verifyHash(key: string, hash: Storage['hash']) {
-    let prefix = "";
-    let value = key;
-    if (key.includes("_")) {
-      const splitKey = key.split("_");
-      prefix = splitKey[0];
-      value = splitKey[1];
-    }
+    const inputBuffer = new TextEncoder().encode(key)
+    const digestBuffer = await crypto.subtle.digest('SHA-256', inputBuffer)
+    const hashArray = Array.from(new Uint8Array(digestBuffer))
+    const $hash = hashArray
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join(""); 
 
-    const valueBytes = this.hexToBytes(value);
-
-    let prefixedBytes = valueBytes;
-
-    if (prefix) {
-      const prefixBytes = new TextEncoder().encode(prefix);
-      const totalByteLength = prefixBytes.length + valueBytes.length;
-      prefixedBytes = new Uint8Array(totalByteLength);
-      prefixedBytes.set(prefixBytes);
-      prefixedBytes.set(valueBytes, prefixBytes.length);
-    }
-
-    const hashBuffer = await crypto.subtle.digest("SHA-256", prefixedBytes);
-    const hashArray = Array.from(new Uint8Array(hashBuffer));
-    const computedHash = hashArray
-      .map((byte) => byte.toString(16).padStart(2, "0"))
-      .join("");
-
-    return computedHash === hash;
+    return $hash === hash
   }
 
-  private computeKey(params: { prefix?: string; keyBytes?: number }) {
-    const t0 = performance.now();
-    const prefix = params?.prefix
-      ? new TextEncoder().encode(params.prefix)
-      : new Uint8Array();
-    const key = crypto.webcrypto.getRandomValues(
-      new Uint8Array(params?.keyBytes ?? 16)
-    );
+  private async computeId(prefix?: string, bytes?: number) {
+    const base = base_x('123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz')
+    const encoded = base.encode(crypto.webcrypto.getRandomValues(new Uint8Array(bytes ?? 16)))
+    const result = [encoded]
+    if (prefix) result.unshift(prefix)
 
-    // ----- Key computation
-    const totalKeyByteLength = prefix.length + key.length;
-    const computedKeyBytes = new Uint8Array(totalKeyByteLength);
-
-    computedKeyBytes.set(prefix);
-    computedKeyBytes.set(key, prefix.length);
-    // -----
-
-    // Hex key value
-    const keyValue = this.bytesToHex(key);
-
-    /**
-     * Use bit shifting to create an identifier out of keyValue
-     * note: KeyValue might or might not have a prefix
-     */
-    const took = this.take(keyValue);
-    const slug = this.getSlug(took);
-
-    return {
-      slug,
-      keyValue,
-      bytes: computedKeyBytes,
-    };
+    const key = result.join('-')
+    return key
   }
 
-  private take(str: string) {
+  private async computeHash(input: string) {
+    const inputBuffer = new TextEncoder().encode(input)
+    const digestBuffer = await crypto.subtle.digest("SHA-256", inputBuffer)
+    const hashArray = Array.from(new Uint8Array(digestBuffer))
+    return hashArray
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+  }
+
+  private computeIdSlug(key: string) {
+    const $key = /-/.test(key) ? key.split("-")[1] : key;
+
+    const took = this.half($key);
+    const id = this.bitShift(took);
+    return id;
+  }
+
+  private half(str: string) {
     const byteSize = new Blob([str]).size;
     const half = Math.ceil(byteSize / 2);
     return str.slice(0, half);
   }
 
-  private getSlug(str: string) {
+  private bitShift(str: string) {
     let id = "";
     for (let i = 0; i < str.length; i++) {
       const charCode = str.charCodeAt(i);
@@ -381,28 +303,6 @@ export class Key {
       id += String.fromCharCode(randomizedCharCode);
     }
 
-    return id;
-  }
-
-  private bytesToHex(bytes: Uint8Array) {
-    return Array.from(bytes)
-      .map((byte) => byte.toString(16).padStart(2, "0"))
-      .join("");
-  }
-
-  private hexToBytes(hex: string) {
-    const bytes = new Uint8Array(Math.ceil(hex.length / 2));
-    for (let i = 0, j = 0; i < hex.length; i += 2, j++) {
-      bytes[j] = parseInt(hex.substring(i, i + 2), 16);
-    }
-    return bytes;
-  }
-
-  getKeyID(params: { key: string }) {
-    const key = /_/.test(params.key) ? params.key.split("_")[1] : params.key;
-
-    const took = this.take(key);
-    const id = this.getSlug(took);
     return id;
   }
 }
@@ -413,8 +313,8 @@ export const keyCreateSchema = z.object({
   rateLimit: dbKeyReturnSchema.pick({ maxTokens: true, refillInterval: true, refillRate: true }).optional()
 }).merge(dbKeyReturnSchema.omit({
   id: true,
-  keyID: true,
   slug: true,
+  keyID: true,
   hash: true,
   maxTokens: true,
   refillInterval: true,

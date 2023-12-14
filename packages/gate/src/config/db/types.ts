@@ -5,8 +5,8 @@ export type DBTablesSchema = z.infer<typeof dbTablesSchema>
 
 export const dbKeyReturnSchema = z.object({
   id: z.string(),
-  slug: z.string(),
   hash: z.string(),
+  slug: z.string(),
   expires: z.number().optional(),
   uses: z.number().optional(),
   metadata: z.string().optional(),
